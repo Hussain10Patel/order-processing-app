@@ -1,0 +1,4 @@
+OrderNumber,OrderDate,DeliveryDate,DistributionCentre,Product,Quantity,Price
+ORD-RESILIENT-1,2026-04-20,2026-04-25,  dc north 01  ,SKU-FLOUR-25,10,18.50
+ORD-RESILIENT-2,2026-04-20,2026-04-25,missing dc,SKU-FLOUR-25,10,18.50
+ORD-1001,2026-04-03,2026-04-08,DC-North-01,SKU-FLOUR-25,10,18.50

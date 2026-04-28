@@ -1,0 +1,3 @@
+SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY table_schema, table_name;
+SELECT table_name, column_name FROM information_schema.columns WHERE table_name IN ('DistributionCentres','distributioncentres') ORDER BY table_name, ordinal_position;
+SELECT id, "Name" FROM public."DistributionCentres" WHERE "Name" = 'TestDC_20260422_153153_780';

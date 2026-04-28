@@ -1,0 +1,1 @@
+SELECT "Id", "Name", "RegionId" FROM public."DistributionCentres" WHERE "Name" = 'TestDC_20260422_153153_780';
