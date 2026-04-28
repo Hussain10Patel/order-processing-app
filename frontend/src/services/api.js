@@ -1,7 +1,8 @@
 import { formatDate, parseUtcDate } from "../utils/date.js";
 export { formatDate, parseUtcDate };
 
-const BASE_URL = "http://localhost:5070";
+//const API_BASE = "https://order-processing-app-3.onrender.com";
+const API_BASE = "https://order-processing-app-3.onrender.com";
  
 
 function getToday() {
@@ -80,7 +81,7 @@ async function request(path, options = {}) {
   };
 
   try {
-    const response = await fetch(`${BASE_URL}${path}`, requestOptions);
+    const response = await fetch(`${API_BASE}${path}`, requestOptions);
     return await handleResponse(response);
   } catch (error) {
     const method = (requestOptions.method ?? "GET").toUpperCase();
@@ -88,7 +89,7 @@ async function request(path, options = {}) {
 
     if (shouldRetry) {
       try {
-        const retryResponse = await fetch(`${BASE_URL}${path}`, requestOptions);
+        const retryResponse = await fetch(`${API_BASE}${path}`, requestOptions);
         return await handleResponse(retryResponse);
       } catch (retryError) {
         console.error(`API retry failed for ${method} ${path}:`, retryError);
@@ -209,7 +210,7 @@ export async function uploadCsv(files, options = {}) {
 
     try {
       const response = await fetch(
-        `${BASE_URL}/api/upload/csv${toQueryString({ allowDuplicates, createMissingProducts })}`,
+        `${API_BASE}/api/upload/csv${toQueryString({ allowDuplicates, createMissingProducts })}`,
         {
           method: "POST",
           body: formData,
@@ -339,7 +340,7 @@ function getDownloadFileName(contentDisposition, fallback) {
 }
 
 export async function downloadReportExport(type, date = getToday()) {
-  const response = await fetch(`${BASE_URL}/api/reports/export/${type}${toQueryString({ date })}`);
+  const response = await fetch(`${API_BASE}/api/reports/export/${type}${toQueryString({ date })}`);
 
   if (!response.ok) {
     await handleResponse(response);
@@ -361,7 +362,7 @@ export async function downloadReportExport(type, date = getToday()) {
 }
 
 export async function downloadExport(type, date = getToday()) {
-  const response = await fetch(`${BASE_URL}/api/export/${type}${toQueryString({ date })}`);
+  const response = await fetch(`${API_BASE}/api/export/${type}${toQueryString({ date })}`);
 
   if (!response.ok) {
     await handleResponse(response);
