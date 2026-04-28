@@ -11,24 +11,32 @@ const string ReactCorsPolicy = "ReactFrontendPolicy";
 
 // Add services
 builder.Services.AddControllers();
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(ReactCorsPolicy, policy =>
     {
         policy
-            .WithOrigins("http://localhost:5173")
+            .AllowAnyOrigin() // TEMP: allows frontend later
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
 });
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.Configure<CsvImportOptions>(builder.Configuration.GetSection("CsvImport"));
+
+builder.Services.Configure<CsvImportOptions>(
+    builder.Configuration.GetSection("CsvImport")
+);
+
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing from appsettings.json.");
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
+
+// Services
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<IPalletService, PalletService>();
@@ -44,17 +52,15 @@ builder.Services.AddScoped<IAdminService, AdminService>();
 
 var app = builder.Build();
 
-// Middleware
+// Swagger only in dev
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-if (!app.Environment.IsDevelopment())
-{
-    app.UseHttpsRedirection();
-}
+// ❌ REMOVE HTTPS REDIRECTION (Render handles HTTPS)
+// app.UseHttpsRedirection();
 
 app.UseCors(ReactCorsPolicy);
 
@@ -62,6 +68,11 @@ app.UseAuthorization();
 
 app.MapControllers();
 
+// Seed data
 await app.Services.SeedCoreDataAsync();
+
+// ✅ Bind to Render port
+var port = Environment.GetEnvironmentVariable("PORT") ?? "80";
+app.Urls.Add($"http://0.0.0.0:{port}");
 
 app.Run();
