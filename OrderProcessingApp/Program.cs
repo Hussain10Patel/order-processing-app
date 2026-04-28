@@ -72,7 +72,7 @@ app.MapControllers();
 await app.Services.SeedCoreDataAsync();
 
 // ✅ Bind to Render port
-var port = Environment.GetEnvironmentVariable("PORT") ?? "80";
-app.Urls.Add($"http://0.0.0.0:{port}");
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+app.Run($"http://0.0.0.0:{port}");
 
 app.Run();
