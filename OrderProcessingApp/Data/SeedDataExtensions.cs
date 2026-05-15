@@ -272,6 +272,7 @@ public static class SeedDataExtensions
             ALTER TABLE ""DeliverySchedules"" ADD COLUMN IF NOT EXISTS ""Notes"" character varying(1000);
             ALTER TABLE ""DistributionCentres"" ADD COLUMN IF NOT EXISTS ""Code"" character varying(120) NOT NULL DEFAULT '';
             ALTER TABLE ""DistributionCentres"" ADD COLUMN IF NOT EXISTS ""RequiresAttention"" boolean NOT NULL DEFAULT FALSE;
+            ALTER TABLE ""DistributionCentres"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""PriceLists"" ADD COLUMN IF NOT EXISTS ""DistributionCentreId"" integer;
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""ProductCode"" character varying(120);
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""ProductName"" character varying(200);
