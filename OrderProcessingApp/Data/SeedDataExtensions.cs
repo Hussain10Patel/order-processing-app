@@ -283,10 +283,6 @@ public static class SeedDataExtensions
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""IsMapped"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""RequiresAttention"" boolean NOT NULL DEFAULT FALSE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""CreatedAt"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
-                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RequiredStock"" numeric(18,2) NOT NULL DEFAULT 0; 
-                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""CurrentStock"" numeric(18,2) NOT NULL DEFAULT 0; 
-                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""Difference"" numeric(18,2) NOT NULL DEFAULT 0; 
-                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RemainingStock"" numeric(18,2) NOT NULL DEFAULT 0; 
                 CREATE TABLE IF NOT EXISTS ""Stocks"" (
                     ""Id"" serial NOT NULL,
                     ""ProductId"" integer NOT NULL,
@@ -299,6 +295,23 @@ public static class SeedDataExtensions
                 ALTER TABLE ""Stocks"" ADD COLUMN IF NOT EXISTS ""Quantity"" numeric(18,2) NOT NULL DEFAULT 0;
                 ALTER TABLE ""Stocks"" ADD COLUMN IF NOT EXISTS ""LastUpdated"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
                 CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Stocks_ProductId"" ON ""Stocks"" (""ProductId"");
+        ", cancellationToken);
+
+        await dbContext.Database.ExecuteSqlRawAsync(@"
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name = 'ProductionDecisions')
+                THEN
+                    ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RequiredStock"" numeric(18,2) NOT NULL DEFAULT 0;
+                    ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""CurrentStock"" numeric(18,2) NOT NULL DEFAULT 0;
+                    ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""Difference"" numeric(18,2) NOT NULL DEFAULT 0;
+                    ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RemainingStock"" numeric(18,2) NOT NULL DEFAULT 0;
+                END IF;
+            END $$;
         ", cancellationToken);
 
         await dbContext.Database.ExecuteSqlRawAsync(@"
