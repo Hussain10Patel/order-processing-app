@@ -283,6 +283,7 @@ public static class SeedDataExtensions
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""MetadataJson"" text NOT NULL DEFAULT '{{}}';
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""IsMapped"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""RequiresAttention"" boolean NOT NULL DEFAULT FALSE;
+            ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""CreatedAt"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
                 CREATE TABLE IF NOT EXISTS ""Stocks"" (
                     ""Id"" serial NOT NULL,
