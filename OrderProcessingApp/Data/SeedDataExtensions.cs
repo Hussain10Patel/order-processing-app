@@ -265,6 +265,7 @@ public static class SeedDataExtensions
         await dbContext.Database.ExecuteSqlRawAsync(@"
             ALTER TABLE ""Orders"" DROP COLUMN IF EXISTS ""RegionId"";
             ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""IsAdjusted"" boolean NOT NULL DEFAULT FALSE;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""TotalPallets"" numeric(18,2) NOT NULL DEFAULT 0;
             ALTER TABLE ""ProductionPlans"" ADD COLUMN IF NOT EXISTS ""Date"" timestamp without time zone;
             ALTER TABLE ""ProductionPlans"" ADD COLUMN IF NOT EXISTS ""ClosingStock"" numeric(18,2) NOT NULL DEFAULT 0;
@@ -274,6 +275,7 @@ public static class SeedDataExtensions
             ALTER TABLE ""DistributionCentres"" ADD COLUMN IF NOT EXISTS ""RequiresAttention"" boolean NOT NULL DEFAULT FALSE;
             ALTER TABLE ""DistributionCentres"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""PriceLists"" ADD COLUMN IF NOT EXISTS ""DistributionCentreId"" integer;
+            ALTER TABLE ""PriceLists"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""ProductCode"" character varying(120);
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""ProductName"" character varying(200);
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""IsUnmapped"" boolean NOT NULL DEFAULT FALSE;
@@ -470,6 +472,7 @@ public static class SeedDataExtensions
                 CONSTRAINT ""FK_PricePromotions_DistributionCentres_DistributionCentreId"" FOREIGN KEY (""DistributionCentreId"")
                     REFERENCES ""DistributionCentres"" (""Id"") ON DELETE CASCADE
             );
+            ALTER TABLE ""PricePromotions"" ADD COLUMN IF NOT EXISTS ""IsActive"" boolean NOT NULL DEFAULT TRUE;
         ", cancellationToken);
 
         await dbContext.Database.ExecuteSqlRawAsync(@"
