@@ -7,6 +7,7 @@ public class DistributionCentre
     public string Code { get; set; } = string.Empty;
     public int RegionId { get; set; }
     public bool RequiresAttention { get; set; }
+    public bool IsActive { get; set; } = true;
 
     public Region? Region { get; set; }
     public ICollection<Order> Orders { get; set; } = new List<Order>();

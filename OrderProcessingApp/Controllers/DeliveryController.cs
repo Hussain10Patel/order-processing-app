@@ -49,14 +49,14 @@ public class DeliveryController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<List<DeliveryScheduleDto>>> GetByDate([FromQuery] DateTime date, CancellationToken cancellationToken)
+    public async Task<ActionResult<List<DeliveryScheduleDto>>> GetByDate([FromQuery] DateTime? date, CancellationToken cancellationToken)
     {
         var result = await _deliveryService.GetScheduleByDateAsync(date, cancellationToken);
         return Ok(result);
     }
 
     [HttpGet("unscheduled")]
-    public async Task<ActionResult<List<OrderDto>>> GetUnscheduledByDate([FromQuery] DateTime date, CancellationToken cancellationToken)
+    public async Task<ActionResult<List<OrderDto>>> GetUnscheduledByDate([FromQuery] DateTime? date, CancellationToken cancellationToken)
     {
         var result = await _deliveryService.GetUnscheduledOrdersByDateAsync(date, cancellationToken);
         return Ok(result);

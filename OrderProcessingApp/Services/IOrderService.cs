@@ -14,4 +14,7 @@ public interface IOrderService
     Task<OrderDto?> ApproveOrderAsync(int id, CancellationToken cancellationToken = default);
     Task<OrderDto?> AdjustOrderAsync(int id, AdjustOrderDto dto, CancellationToken cancellationToken = default);
     Task<OrderDto?> RecalculateOrderAsync(int id, CancellationToken cancellationToken = default);
+    Task SoftDeleteOrderAsync(int id, CancellationToken cancellationToken = default);
+    Task<OrderItemSwapAuditResponseDto> AuditHistoricalSwappedOrderItemsAsync(bool onlyConfirmed = false, int limit = 500, string? orderNumber = null, string? sku = null, CancellationToken cancellationToken = default);
+    Task<OrderItemSwapRepairResponseDto> RepairHistoricalSwappedOrderItemsAsync(bool dryRun = true, int limit = 500, string? orderNumber = null, string? sku = null, CancellationToken cancellationToken = default);
 }

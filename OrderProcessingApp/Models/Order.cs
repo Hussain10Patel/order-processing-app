@@ -11,6 +11,7 @@ public class Order
     public OrderStatus Status { get; set; } = OrderStatus.Pending;
     public string? Notes { get; set; }
     public bool IsAdjusted { get; set; }
+    public bool IsActive { get; set; } = true;
     public decimal TotalValue { get; set; }
     public decimal TotalPallets { get; set; }
 

@@ -14,14 +14,16 @@ public class AdminController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IAdminService _adminService;
     private readonly IOrderService _orderService;
+    private readonly IPricingService _pricingService;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<AdminController> _logger;
 
-    public AdminController(AppDbContext dbContext, IAdminService adminService, IOrderService orderService, IWebHostEnvironment environment, ILogger<AdminController> logger)
+    public AdminController(AppDbContext dbContext, IAdminService adminService, IOrderService orderService, IPricingService pricingService, IWebHostEnvironment environment, ILogger<AdminController> logger)
     {
         _dbContext = dbContext;
         _adminService = adminService;
         _orderService = orderService;
+        _pricingService = pricingService;
         _environment = environment;
         _logger = logger;
     }
@@ -60,34 +62,34 @@ public class AdminController : ControllerBase
     [HttpPost("products")]
     public async Task<ActionResult<ProductDto>> CreateProduct([FromBody] ProductUpsertDto dto, CancellationToken cancellationToken)
     {
-        var normalizedSku = NormalizeSku(dto.SKUCode);
-        var exists = await _dbContext.Products
-            .AnyAsync(x => x.SKUCode != null && x.SKUCode.Trim().ToLower() == normalizedSku, cancellationToken);
-        if (exists)
+        try
         {
-            return BadRequest(new { message = "A product with this SKU already exists." });
+            var (entity, restored) = await _adminService.CreateOrRestoreProductAsync(
+                dto.Name,
+                dto.SKUCode,
+                dto.PalletConversionRate,
+                cancellationToken);
+
+            var output = new ProductDto
+            {
+                Id = entity.Id,
+                Name = entity.Name,
+                SKUCode = entity.SKUCode,
+                PalletConversionRate = entity.PalletConversionRate,
+                RequiresAttention = entity.RequiresAttention
+            };
+
+            if (restored)
+            {
+                return Ok(output);
+            }
+
+            return CreatedAtAction(nameof(GetProducts), new { id = entity.Id }, output);
         }
-
-        var entity = new Product
+        catch (InvalidOperationException ex)
         {
-            Name = dto.Name,
-            SKUCode = normalizedSku,
-            PalletConversionRate = dto.PalletConversionRate,
-            IsMapped = true,
-            RequiresAttention = false
-        };
-
-        _dbContext.Products.Add(entity);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return CreatedAtAction(nameof(GetProducts), new { id = entity.Id }, new ProductDto
-        {
-            Id = entity.Id,
-            Name = entity.Name,
-            SKUCode = entity.SKUCode,
-            PalletConversionRate = entity.PalletConversionRate,
-            RequiresAttention = entity.RequiresAttention
-        });
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     [HttpPut("products/{id:int}")]
@@ -141,14 +143,12 @@ public class AdminController : ControllerBase
     [HttpDelete("products/{id:int}")]
     public async Task<IActionResult> DeleteProduct(int id, CancellationToken cancellationToken)
     {
-        var entity = await _dbContext.Products.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-        if (entity is null)
+        var deleted = await _adminService.SoftDeleteProductAsync(id, cancellationToken);
+        if (!deleted)
         {
             return NotFound();
         }
 
-        _dbContext.Products.Remove(entity);
-        await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 
@@ -192,56 +192,19 @@ public class AdminController : ControllerBase
             return BadRequest(new { message = "Distribution centre name is required." });
         }
 
-        var exists = await _dbContext.DistributionCentres
-            .AsNoTracking()
-            .AnyAsync(x => x.Name == name || x.Code == name, cancellationToken);
-        if (exists)
+        try
         {
-            return BadRequest(new { message = "Distribution centre already exists." });
+            var (dc, _) = await _adminService.CreateOrRestoreDistributionCentreAsync(name, input.DistributionCentreId, cancellationToken);
+            return Ok(new
+            {
+                id = dc.Id,
+                name = dc.Name
+            });
         }
-
-        var sourceDistributionCentreId = input.DistributionCentreId;
-        if (!sourceDistributionCentreId.HasValue || sourceDistributionCentreId.Value <= 0)
+        catch (InvalidOperationException ex)
         {
-            sourceDistributionCentreId = await _dbContext.DistributionCentres
-                .AsNoTracking()
-                .OrderBy(x => x.Id)
-                .Select(x => (int?)x.Id)
-                .FirstOrDefaultAsync(cancellationToken);
+            return BadRequest(new { message = ex.Message });
         }
-
-        if (!sourceDistributionCentreId.HasValue)
-        {
-            return BadRequest(new { message = "DistributionCentreId is required." });
-        }
-
-        var sourceDistributionCentre = await _dbContext.DistributionCentres
-            .AsNoTracking()
-            .Where(x => x.Id == sourceDistributionCentreId.Value)
-            .Select(x => new { x.RegionId })
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (sourceDistributionCentre is null)
-        {
-            return BadRequest(new { message = "Invalid distribution centre." });
-        }
-
-        var dc = new DistributionCentre
-        {
-            Name = name,
-            Code = name,
-            RegionId = sourceDistributionCentre.RegionId,
-            RequiresAttention = false
-        };
-
-        _dbContext.DistributionCentres.Add(dc);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return Ok(new
-        {
-            id = dc.Id,
-            name = dc.Name
-        });
     }
 
     [HttpPost("regions")]
@@ -279,85 +242,261 @@ public class AdminController : ControllerBase
     }
 
     [HttpGet("pricelists")]
-    public async Task<ActionResult<List<PriceListDto>>> GetPriceLists(CancellationToken cancellationToken)
+    public async Task<ActionResult<List<PriceListDto>>> GetPriceLists([FromQuery(Name = "distributionCentreIds")] string? distributionCentreIds, CancellationToken cancellationToken)
     {
-        var priceLists = await _dbContext.PriceLists
-            .AsNoTracking()
-            .Include(x => x.Product)
-            .Include(x => x.DistributionCentre)
-            .OrderBy(x => x.DistributionCentre!.Name)
-            .ThenBy(x => x.Product!.Name)
-            .Select(x => new PriceListDto
-            {
-                Id = x.Id,
-                ProductId = x.ProductId,
-                ProductName = x.Product!.Name,
-                DistributionCentreId = x.DistributionCentreId,
-                DistributionCentreName = x.DistributionCentre!.Name,
-                Price = x.Price
-            })
-            .ToListAsync(cancellationToken);
+        var parsedDistributionCentreIds = ParseDistributionCentreIds(distributionCentreIds);
+        var priceLists = await _pricingService.GetPriceListsAsync(parsedDistributionCentreIds, null, cancellationToken);
 
         return Ok(priceLists);
+    }
+
+    [HttpGet("price-promotions")]
+    public async Task<ActionResult<List<PricePromotionDto>>> GetPricePromotions([FromQuery] bool includeInactive = false, CancellationToken cancellationToken = default)
+    {
+        var promotions = await _pricingService.GetPricePromotionsAsync(null, includeInactive, cancellationToken);
+        return Ok(promotions);
+    }
+
+    [HttpPost("price-promotions")]
+    public async Task<ActionResult<PricePromotionDto>> UpsertPricePromotion([FromBody] PricePromotionUpsertDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var promotion = await _pricingService.UpsertPromotionAsync(dto, cancellationToken);
+            return Ok(promotion);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("price-promotions/{id:int}")]
+    public async Task<ActionResult<PricePromotionDto>> UpdatePricePromotion(int id, [FromBody] PricePromotionUpsertDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var promotion = await _pricingService.UpdatePromotionAsync(id, dto, cancellationToken);
+            return Ok(promotion);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpDelete("price-promotions/{id:int}")]
+    public async Task<IActionResult> DeletePricePromotion(int id, CancellationToken cancellationToken)
+    {
+        var deleted = await _pricingService.DeletePromotionAsync(id, cancellationToken);
+        if (!deleted)
+        {
+            return NotFound();
+        }
+
+        return NoContent();
+    }
+
+    [HttpPost("price-promotions/{id:int}/deactivate")]
+    public async Task<IActionResult> DeactivatePricePromotion(int id, CancellationToken cancellationToken)
+    {
+        var deactivated = await _pricingService.DeactivatePromotionAsync(id, cancellationToken);
+        if (!deactivated)
+        {
+            return NotFound();
+        }
+
+        return NoContent();
     }
 
     [HttpPost("pricelists")]
     public async Task<ActionResult<PriceListDto>> UpsertPriceList([FromBody] PriceListUpsertDto dto, CancellationToken cancellationToken)
     {
-        var productExists = await _dbContext.Products.AnyAsync(x => x.Id == dto.ProductId, cancellationToken);
-        var dc = await _dbContext.DistributionCentres
-            .FirstOrDefaultAsync(x => x.Id == dto.DistributionCentreId, cancellationToken);
-
-        if (!productExists)
+        try
         {
-            return BadRequest(new { message = "Product not found." });
+            var (existing, _) = await _adminService.CreateOrRestorePriceListAsync(
+                dto.ProductId,
+                dto.DistributionCentreId,
+                dto.Price,
+                cancellationToken);
+
+            var output = await _dbContext.PriceLists
+                .AsNoTracking()
+                .Include(x => x.Product)
+                .Include(x => x.DistributionCentre)
+                .Where(x => x.Id == existing.Id)
+                .Select(x => new PriceListDto
+                {
+                    Id = x.Id,
+                    ProductId = x.ProductId,
+                    ProductName = x.Product!.Name,
+                    DistributionCentreId = x.DistributionCentreId,
+                    DistributionCentreName = x.DistributionCentre!.Name,
+                    BasePrice = x.Price,
+                    EffectivePrice = x.Price
+                })
+                .FirstAsync(cancellationToken);
+
+            return Ok(output);
         }
-
-        if (dc is null)
+        catch (KeyNotFoundException ex)
         {
-            return BadRequest(new { message = "Invalid distribution centre" });
-        }
-
-        var existing = await _dbContext.PriceLists
-            .FirstOrDefaultAsync(x => x.ProductId == dto.ProductId && x.DistributionCentreId == dto.DistributionCentreId, cancellationToken);
-
-        if (existing is null)
-        {
-            existing = new PriceList
+            if (string.Equals(ex.Message, "Product not found.", StringComparison.Ordinal))
             {
-                ProductId = dto.ProductId,
-                DistributionCentreId = dto.DistributionCentreId,
-                Price = dto.Price
-            };
+                return NotFound(new
+                {
+                    errorCode = "PRICE_LIST_PRODUCT_NOT_FOUND",
+                    message = ex.Message,
+                    productId = dto.ProductId,
+                    distributionCentreId = dto.DistributionCentreId
+                });
+            }
 
-            _dbContext.PriceLists.Add(existing);
-        }
-        else
-        {
-            existing.Price = dto.Price;
-        }
-
-        Console.WriteLine($"Saving PriceList: Product={dto.ProductId}, DC={dto.DistributionCentreId}, Price={dto.Price}");
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        var output = await _dbContext.PriceLists
-            .AsNoTracking()
-            .Include(x => x.Product)
-            .Include(x => x.DistributionCentre)
-            .Where(x => x.Id == existing.Id)
-            .Select(x => new PriceListDto
+            if (string.Equals(ex.Message, "Invalid distribution centre", StringComparison.Ordinal))
             {
-                Id = x.Id,
-                ProductId = x.ProductId,
-                ProductName = x.Product!.Name,
-                DistributionCentreId = x.DistributionCentreId,
-                DistributionCentreName = x.DistributionCentre!.Name,
-                Price = x.Price
-            })
-            .FirstAsync(cancellationToken);
+                return NotFound(new
+                {
+                    errorCode = "PRICE_LIST_DISTRIBUTION_CENTRE_NOT_FOUND",
+                    message = ex.Message,
+                    productId = dto.ProductId,
+                    distributionCentreId = dto.DistributionCentreId
+                });
+            }
 
-        return Ok(output);
+            return BadRequest(new
+            {
+                errorCode = "PRICE_LIST_CREATE_BAD_REQUEST",
+                message = ex.Message,
+                productId = dto.ProductId,
+                distributionCentreId = dto.DistributionCentreId
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (string.Equals(ex.Message, "This item already exists", StringComparison.Ordinal))
+            {
+                return Conflict(new
+                {
+                    errorCode = "PRICE_LIST_DUPLICATE_ACTIVE",
+                    message = ex.Message,
+                    productId = dto.ProductId,
+                    distributionCentreId = dto.DistributionCentreId
+                });
+            }
+
+            return BadRequest(new
+            {
+                errorCode = "PRICE_LIST_CREATE_INVALID_OPERATION",
+                message = ex.Message,
+                productId = dto.ProductId,
+                distributionCentreId = dto.DistributionCentreId
+            });
+        }
+    }
+
+    [HttpDelete("pricelists/{id:int}")]
+    [HttpDelete("/api/pricelists/{id:int}")]
+    public async Task<IActionResult> DeletePriceList(int id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await _adminService.SoftDeletePriceListAsync(id, cancellationToken);
+            if (!deleted)
+            {
+                Console.WriteLine($"[DELETE] Entity: PriceList, Id: {id}, Success: false");
+                return NotFound(new { message = $"Price list not found. PriceListId={id}." });
+            }
+
+            Console.WriteLine($"[DELETE] Entity: PriceList, Id: {id}, Success: true");
+            return Ok();
+        }
+        catch (InvalidOperationException)
+        {
+            Console.WriteLine($"[DELETE] Entity: PriceList, Id: {id}, Success: false");
+            return BadRequest(new { message = "Cannot delete, entity is in use" });
+        }
+    }
+
+    [HttpGet("order-item-swap-audit")]
+    public async Task<ActionResult<OrderItemSwapAuditResponseDto>> AuditOrderItemSwapCandidates(
+        [FromQuery] bool onlyConfirmed = false,
+        [FromQuery] int limit = 500,
+        [FromQuery] string? orderNumber = null,
+        [FromQuery] string? sku = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _orderService.AuditHistoricalSwappedOrderItemsAsync(
+            onlyConfirmed,
+            limit,
+            orderNumber,
+            sku,
+            cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpPost("order-item-swap-repair")]
+    public async Task<ActionResult<OrderItemSwapRepairResponseDto>> RepairOrderItemSwaps(
+        [FromQuery] bool dryRun = true,
+        [FromQuery] int limit = 500,
+        [FromQuery] string? orderNumber = null,
+        [FromQuery] string? sku = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _orderService.RepairHistoricalSwappedOrderItemsAsync(
+            dryRun,
+            limit,
+            orderNumber,
+            sku,
+            cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpDelete("distributioncentres/{id:int}")]
+    [HttpDelete("/api/distributioncentres/{id:int}")]
+    public async Task<IActionResult> DeleteDistributionCentre(int id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await _adminService.SoftDeleteDistributionCentreAsync(id, cancellationToken);
+            if (!deleted)
+            {
+                Console.WriteLine($"[DELETE] Entity: DistributionCentre, Id: {id}, Success: false");
+                return NotFound(new { message = $"Distribution centre not found. DistributionCentreId={id}." });
+            }
+
+            Console.WriteLine($"[DELETE] Entity: DistributionCentre, Id: {id}, Success: true");
+            return Ok();
+        }
+        catch (InvalidOperationException)
+        {
+            Console.WriteLine($"[DELETE] Entity: DistributionCentre, Id: {id}, Success: false");
+            return BadRequest(new { message = "Cannot delete, entity is in use" });
+        }
+    }
+
+    private static IReadOnlyCollection<int>? ParseDistributionCentreIds(string? distributionCentreIds)
+    {
+        if (string.IsNullOrWhiteSpace(distributionCentreIds))
+        {
+            return null;
+        }
+
+        var values = distributionCentreIds
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => int.TryParse(value, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+
+        return values.Count == 0 ? null : values;
     }
 
 }

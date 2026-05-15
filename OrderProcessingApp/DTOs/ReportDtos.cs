@@ -87,6 +87,15 @@ public class ReportSummaryDto
     public List<ReportDeliverySummaryDto> DeliverySummary { get; set; } = new();
 }
 
+public class ReportAvailableDateDto
+{
+    public string Date { get; set; } = string.Empty;
+    public bool HasOrders { get; set; }
+    public bool HasDeliveryRows { get; set; }
+    public bool HasSummaryRows { get; set; }
+    public bool HasExportableRows { get; set; }
+}
+
 public class ReportStatusCountDto
 {
     public string Status { get; set; } = string.Empty;

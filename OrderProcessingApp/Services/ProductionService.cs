@@ -8,155 +8,223 @@ namespace OrderProcessingApp.Services;
 public class ProductionService : IProductionService
 {
     private readonly AppDbContext _dbContext;
+    private readonly ILogger<ProductionService> _logger;
 
-    public ProductionService(AppDbContext dbContext)
+    private sealed class ProductionItemCalculation
+    {
+        public int OrderItemId { get; set; }
+        public decimal RequiredStock { get; set; }
+        public decimal CurrentStock { get; set; }
+        public decimal Difference { get; set; }
+        public decimal ComputedProductionRequired { get; set; }
+        public decimal RemainingStock { get; set; }
+        public bool? DecisionIsSufficient { get; set; }
+        public decimal? DecisionRequiredProductionQty { get; set; }
+        public decimal DisplayProductionRequired { get; set; }
+        public bool UsedPersistedDecisionStock { get; set; }
+        public bool UsedManualStock { get; set; }
+    }
+
+    public ProductionService(AppDbContext dbContext, ILogger<ProductionService> logger)
     {
         _dbContext = dbContext;
+        _logger = logger;
+    }
+
+    public async Task<ProductionResponseDto> GetProductionAsync(DateTime? date, CancellationToken cancellationToken = default)
+    {
+        return await GetProductionByOrderAsync(date, cancellationToken);
+    }
+
+    private async Task<ProductionResponseDto> GetProductionByOrderAsync(DateTime? planningDate, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("[PRODUCTION LOAD START] PlanningDate: {PlanningDate}", planningDate);
+
+        try
+        {
+            var orphanedDcOrderCount = await _dbContext.Orders
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .CountAsync(order => !_dbContext.DistributionCentres.IgnoreQueryFilters().Any(dc => dc.Id == order.DistributionCentreId), cancellationToken);
+
+            var ordersWithoutDcAssignment = await _dbContext.Orders
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .CountAsync(order => order.DistributionCentreId <= 0, cancellationToken);
+
+            var duplicateInactiveDcNames = await _dbContext.DistributionCentres
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(dc => !dc.IsActive)
+                .GroupBy(dc => (dc.Name ?? string.Empty).Trim().ToLower())
+                .Where(group => group.Count() > 1)
+                .Select(group => group.Key)
+                .ToListAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "[PRODUCTION DC] OrphanedDcOrders: {OrphanedDcOrders}, OrdersWithInvalidDistributionCentreId: {OrdersWithInvalidDistributionCentreId}, DuplicateInactiveDcNames: {DuplicateInactiveDcNames}",
+                orphanedDcOrderCount,
+                ordersWithoutDcAssignment,
+                duplicateInactiveDcNames.Count);
+
+            var orders = await _dbContext.Orders
+                .AsNoTracking()
+                .Where(x => OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(x.Status))
+                .Include(x => x.DistributionCentre)
+                .Include(x => x.Items)
+                    .ThenInclude(x => x.Product)
+                .Include(x => x.Items)
+                    .ThenInclude(x => x.ProductionDecisions)
+                .OrderBy(x => x.DeliveryDate)
+                .ThenBy(x => x.OrderNumber)
+                .ToListAsync(cancellationToken);
+
+            _logger.LogInformation("[PRODUCTION STATUS FILTER] AllowedStatuses={Statuses}, ReturnedOrders={Count}", OrderWorkflowStatusRules.ProductionAndDeliveryStatusLabel, orders.Count);
+
+            foreach (var order in orders)
+            {
+                _logger.LogInformation(
+                    "[PRODUCTION ORDER] OrderId: {OrderId}, OrderNumber: {OrderNumber}, DistributionCentreId: {DistributionCentreId}, Status: {Status}, Items: {Items}",
+                    order.Id,
+                    order.OrderNumber,
+                    order.DistributionCentreId,
+                    order.Status,
+                    order.Items.Count);
+
+                _logger.LogInformation(
+                    "[PRODUCTION DC] OrderId: {OrderId}, DistributionCentreId: {DistributionCentreId}, DistributionCentreName: {DistributionCentreName}, HasDistributionCentre: {HasDistributionCentre}",
+                    order.Id,
+                    order.DistributionCentreId,
+                    order.DistributionCentre?.Name ?? string.Empty,
+                    order.DistributionCentre is not null);
+
+                foreach (var item in order.Items)
+                {
+                    _logger.LogInformation(
+                        "[PRODUCTION ITEM] OrderId: {OrderId}, OrderItemId: {OrderItemId}, ProductId: {ProductId}, ProductName: {ProductName}, HasProduct: {HasProduct}",
+                        order.Id,
+                        item.Id,
+                        item.ProductId,
+                        item.Product?.Name ?? item.ProductName ?? string.Empty,
+                        item.Product is not null);
+                }
+            }
+
+            var calculatedByItemId = await BuildProductionSnapshotAsync(orders, planningDate, cancellationToken);
+
+            Console.WriteLine($"[PRODUCTION] Loaded visible orders: {orders.Count}");
+            foreach (var order in orders)
+            {
+                Console.WriteLine($"[PRODUCTION][ORDER] Id={order.Id}, Number={order.OrderNumber}, Status={order.Status}, Items={order.Items.Count}");
+            }
+
+            var validOrders = new List<Order>();
+            foreach (var order in orders)
+            {
+                var hasInvalidOrderDc = order.DistributionCentreId <= 0
+                    || order.DistributionCentre is null
+                    || string.IsNullOrWhiteSpace(order.DistributionCentre.Name);
+
+                var hasInvalidItem = order.Items.Any(item => item.ProductId <= 0 || item.Product is null);
+                if (hasInvalidOrderDc || hasInvalidItem)
+                {
+                    _logger.LogWarning(
+                        "[PRODUCTION INVALID ORDER] OrderId: {OrderId}, OrderNumber: {OrderNumber}, DistributionCentreId: {DistributionCentreId}, DistributionCentreName: {DistributionCentreName}",
+                        order.Id,
+                        order.OrderNumber,
+                        order.DistributionCentreId,
+                        order.DistributionCentre?.Name ?? string.Empty);
+                    continue;
+                }
+
+                validOrders.Add(order);
+            }
+
+            var orderDtos = validOrders.Select(order =>
+            {
+                var itemDtos = order.Items
+                    .OrderBy(item => item.Id)
+                    .Select(item =>
+                    {
+                        if (!calculatedByItemId.TryGetValue(item.Id, out var calculated))
+                        {
+                            calculated = new ProductionItemCalculation
+                            {
+                                OrderItemId = item.Id,
+                                RequiredStock = item.Quantity,
+                                CurrentStock = 0,
+                                Difference = 0,
+                                ComputedProductionRequired = item.Quantity,
+                                RemainingStock = 0,
+                                DecisionIsSufficient = null,
+                                DecisionRequiredProductionQty = null,
+                                DisplayProductionRequired = item.Quantity
+                            };
+                        }
+
+                        return new ProductionOrderItemDto
+                        {
+                            OrderItemId = item.Id,
+                            ProductId = item.ProductId,
+                            ProductCode = item.ProductCode ?? item.Product?.SKUCode ?? string.Empty,
+                            ProductName = item.ProductName ?? item.Product?.Name ?? string.Empty,
+                            Quantity = item.Quantity,
+                            Pallets = item.Pallets,
+                            CurrentStock = calculated.CurrentStock,
+                            RequiredStock = calculated.RequiredStock,
+                            Difference = calculated.Difference,
+                            ProductionRequired = calculated.ComputedProductionRequired,
+                            RemainingStock = calculated.RemainingStock,
+                            DecisionIsSufficient = calculated.DecisionIsSufficient,
+                            DecisionRequiredProductionQty = calculated.DecisionRequiredProductionQty
+                        };
+                    }).ToList();
+
+                return new ProductionOrderDto
+                {
+                    OrderId = order.Id,
+                    OrderNumber = order.OrderNumber,
+                    DeliveryDate = order.DeliveryDate,
+                    DistributionCentreId = order.DistributionCentreId,
+                    DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
+                    Status = order.Status.ToString(),
+                    IsProcessed = order.Status == OrderStatus.Processed,
+                    Items = itemDtos
+                };
+            }).ToList();
+
+            return new ProductionResponseDto
+            {
+                Orders = orderDtos
+            };
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "[PRODUCTION ERROR] Failed while loading production orders.");
+            throw;
+        }
     }
 
     public async Task<ProductionResponseDto> GetProductionByDateAsync(DateTime date, CancellationToken cancellationToken = default)
     {
-        var selectedDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
-        var nextDate = selectedDate.AddDays(1);
-        Console.WriteLine($"[DATE FLOW] Service incoming date: {date:O}, Kind={date.Kind}");
-        Console.WriteLine($"[DATE FLOW] Normalized date:       {selectedDate:O}, Kind={selectedDate.Kind}");
-        Console.WriteLine($"[PRODUCTION] Fetching for {selectedDate:yyyy-MM-dd}");
-        Console.WriteLine("[PROD] Including VALIDATED orders in production");
-
-        // Fetch full schedule records so we can log each match
-        var scheduleMatches = await _dbContext.DeliverySchedules
-            .AsNoTracking()
-            .Where(x => x.DeliveryDate >= selectedDate && x.DeliveryDate < nextDate)
-            .ToListAsync(cancellationToken);
-
-        foreach (var s in scheduleMatches)
-            Console.WriteLine($"[SCHEDULE MATCH] OrderId={s.OrderId}, Date={s.DeliveryDate:yyyy-MM-dd}, Kind={s.DeliveryDate.Kind}");
-
-        var scheduledOrderIds = await _dbContext.DeliverySchedules
-            .AsNoTracking()
-            .Where(ds => ds.DeliveryDate >= selectedDate && ds.DeliveryDate < nextDate)
-            .Select(ds => ds.OrderId)
-            .ToListAsync(cancellationToken);
-
-        Console.WriteLine($"[SCHEDULE] scheduledOrderIds for {selectedDate:yyyy-MM-dd}: [{string.Join(", ", scheduledOrderIds)}] (count={scheduledOrderIds.Count})");
-
-        // --- Scheduled ---
-        var scheduledOrders = await _dbContext.Orders
-            .AsNoTracking()
-            .Where(x => scheduledOrderIds.Contains(x.Id)
-                && (x.Status == OrderStatus.Approved
-                    || x.Status == OrderStatus.Processed
-                    || x.Status == OrderStatus.Validated))
-            .Include(x => x.DistributionCentre)
-            .Include(x => x.Items)
-            .ToListAsync(cancellationToken);
-
-        Console.WriteLine($"[PRODUCTION] Filtered orders: {scheduledOrders.Count}");
-        foreach (var o in scheduledOrders)
-            Console.WriteLine($"[SCHEDULED ORDER] Id={o.Id}, Status={o.Status}, DeliveryDate={o.DeliveryDate:yyyy-MM-dd}, Kind={o.DeliveryDate.Kind}");
-
-        var scheduledItems = scheduledOrders
-            .SelectMany(order => order.Items.Select(item => new
-            {
-                item.ProductId,
-                ProductCode = item.ProductCode ?? string.Empty,
-                ProductName = item.ProductName ?? string.Empty,
-                DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
-                Status = order.Status,
-                item.Quantity,
-                item.Pallets
-            }))
-            .ToList();
-
-        Console.WriteLine($"[PRODUCTION] Items count: {scheduledItems.Count}");
-
-        var scheduled = scheduledItems
-            .GroupBy(x => new { x.ProductId, x.ProductCode, x.ProductName, x.DistributionCentre })
-            .Select(g => new ProductionDto
-            {
-                ProductId = g.Key.ProductId,
-                ProductCode = g.Key.ProductCode,
-                ProductName = g.Key.ProductName,
-                DistributionCentre = g.Key.DistributionCentre,
-                Status = GetHighestProductionStatus(g.Select(x => x.Status)).ToString(),
-                TotalQuantity = g.Sum(x => x.Quantity),
-                TotalPallets = Math.Round(g.Sum(x => x.Pallets), 2),
-                OpeningStock = 0,
-                ProductionRequired = g.Sum(x => x.Quantity)
-            })
-            .OrderBy(x => x.DistributionCentre)
-            .ThenBy(x => x.ProductName)
-            .ToList();
-
-        Console.WriteLine($"[FINAL] Scheduled groups: {scheduled.Count}");
-
-        // --- Unscheduled ---
-        var unscheduledOrders = await _dbContext.Orders
-            .AsNoTracking()
-            .Where(x => x.DeliveryDate >= selectedDate
-                && x.DeliveryDate < nextDate
-                && !_dbContext.DeliverySchedules.Any(ds =>
-                    ds.OrderId == x.Id &&
-                    ds.DeliveryDate >= selectedDate && ds.DeliveryDate < nextDate)
-            )
-            .Where(x => x.Status == OrderStatus.Approved
-                || x.Status == OrderStatus.Processed
-                || x.Status == OrderStatus.Validated)
-            .Include(x => x.DistributionCentre)
-            .Include(x => x.Items)
-            .ToListAsync(cancellationToken);
-
-        foreach (var o in unscheduledOrders)
-        {
-            Console.WriteLine($"[UNSCHEDULED ORDER] Id={o.Id}, Status={o.Status}, DeliveryDate={o.DeliveryDate:yyyy-MM-dd}, Kind={o.DeliveryDate.Kind}");
-            Console.WriteLine($"[UNSCHEDULED INCLUDE] OrderId={o.Id}, DeliveryDate={o.DeliveryDate:yyyy-MM-dd}");
-        }
-
-        var unscheduledItems = unscheduledOrders
-            .SelectMany(order => order.Items.Select(item => new
-            {
-                item.ProductId,
-                ProductCode = item.ProductCode ?? string.Empty,
-                ProductName = item.ProductName ?? string.Empty,
-                DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
-                Status = order.Status,
-                item.Quantity,
-                item.Pallets
-            }))
-            .ToList();
-
-        var unscheduled = unscheduledItems
-            .GroupBy(x => new { x.ProductId, x.ProductCode, x.ProductName, x.DistributionCentre })
-            .Select(g => new ProductionDto
-            {
-                ProductId = g.Key.ProductId,
-                ProductCode = g.Key.ProductCode,
-                ProductName = g.Key.ProductName,
-                DistributionCentre = g.Key.DistributionCentre,
-                Status = GetHighestProductionStatus(g.Select(x => x.Status)).ToString(),
-                TotalQuantity = g.Sum(x => x.Quantity),
-                TotalPallets = Math.Round(g.Sum(x => x.Pallets), 2),
-                OpeningStock = 0,
-                ProductionRequired = g.Sum(x => x.Quantity)
-            })
-            .OrderBy(x => x.DistributionCentre)
-            .ThenBy(x => x.ProductName)
-            .ToList();
-
-        Console.WriteLine($"[FINAL] Unscheduled groups: {unscheduled.Count}");
-
-        return new ProductionResponseDto
-        {
-            Scheduled = scheduled,
-            Unscheduled = unscheduled
-        };
+        return await GetProductionByOrderAsync(date, cancellationToken);
     }
 
     private static OrderStatus GetHighestProductionStatus(IEnumerable<OrderStatus> statuses)
     {
+        if (statuses.Any(x => x == OrderStatus.Scheduled))
+        {
+            return OrderStatus.Scheduled;
+        }
+
         if (statuses.Any(x => x == OrderStatus.Processed))
         {
             return OrderStatus.Processed;
+        }
+
+        if (statuses.Any(x => x == OrderStatus.InProduction))
+        {
+            return OrderStatus.InProduction;
         }
 
         if (statuses.Any(x => x == OrderStatus.Approved))
@@ -164,13 +232,12 @@ public class ProductionService : IProductionService
             return OrderStatus.Approved;
         }
 
-        return OrderStatus.Validated;
+        return OrderStatus.Pending;
     }
 
     public async Task<List<ProductionPlanDto>> CreateAsync(List<int> orderIds, CancellationToken cancellationToken = default)
     {
         var orders = await _dbContext.Orders
-            .AsNoTracking()
             .Include(o => o.Items)
                 .ThenInclude(i => i.Product)
             .Where(o => orderIds.Contains(o.Id))
@@ -181,7 +248,7 @@ public class ProductionService : IProductionService
             throw new KeyNotFoundException($"Orders not found: {string.Join(", ", notFound)}.");
 
         var productionReadyOrders = orders
-            .Where(o => o.Status == OrderStatus.Approved || o.Status == OrderStatus.Processed)
+            .Where(o => o.Status == OrderStatus.Approved)
             .ToList();
 
         if (productionReadyOrders.Count == 0)
@@ -208,6 +275,11 @@ public class ProductionService : IProductionService
         if (groups.Count == 0)
         {
             return new List<ProductionPlanDto>();
+        }
+
+        foreach (var order in productionReadyOrders)
+        {
+            order.Status = OrderStatus.Processed;
         }
 
         foreach (var group in groups)
@@ -240,6 +312,196 @@ public class ProductionService : IProductionService
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return await GetPlansByDateAsync(groups.Select(g => g.Key.PlanDate).Distinct().First(), cancellationToken);
+    }
+
+    public async Task<ProductionDecisionResultDto> SaveProductionDecisionsAsync(SaveProductionDecisionsDto dto, CancellationToken cancellationToken = default)
+    {
+        var order = await _dbContext.Orders
+            .Include(x => x.Items)
+                .ThenInclude(x => x.ProductionDecisions)
+            .FirstOrDefaultAsync(x => x.Id == dto.OrderId, cancellationToken);
+
+        if (order is null)
+        {
+            throw new KeyNotFoundException($"Order not found. OrderId={dto.OrderId}.");
+        }
+
+        if (!OrderWorkflowStatusRules.IsProductionDecisionEditable(order.Status))
+        {
+            throw new InvalidOperationException($"Production decisions can only be saved for Approved, InProduction, or Processed orders. Current status: {order.Status}.");
+        }
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        var reopenedForEdit = false;
+        if (order.Status == OrderStatus.Approved)
+        {
+            order.Status = OrderStatus.InProduction;
+        }
+        else if (order.Status == OrderStatus.Processed)
+        {
+            order.Status = OrderStatus.InProduction;
+            reopenedForEdit = true;
+            _logger.LogInformation("[PRODUCTION EDIT REOPEN] OrderId={OrderId} reopened from Processed to InProduction for decision update.", order.Id);
+        }
+
+        var activeProductionOrders = await _dbContext.Orders
+            .Include(x => x.Items)
+                .ThenInclude(x => x.ProductionDecisions)
+            .Where(x => OrderWorkflowStatusRules.ProductionDemandQueryableStatuses.Contains(x.Status))
+            .OrderBy(x => x.DeliveryDate)
+            .ThenBy(x => x.OrderNumber)
+            .ToListAsync(cancellationToken);
+
+        var manualInitialStockByItemId = new Dictionary<int, decimal>();
+        foreach (var decision in dto.Decisions)
+        {
+            if (!decision.ManualInitialStock.HasValue)
+            {
+                continue;
+            }
+
+            if (decision.ManualInitialStock.Value < 0)
+            {
+                throw new InvalidOperationException($"Manual initial stock cannot be negative. OrderItemId={decision.OrderItemId}, Value={decision.ManualInitialStock.Value}.");
+            }
+
+            manualInitialStockByItemId[decision.OrderItemId] = decision.ManualInitialStock.Value;
+            _logger.LogInformation(
+                "[PRODUCTION MANUAL STOCK] OrderId={OrderId}, OrderItemId={OrderItemId}, ManualInitialStock={ManualInitialStock}",
+                dto.OrderId,
+                decision.OrderItemId,
+                decision.ManualInitialStock.Value);
+        }
+
+        var calculatedByItemId = await BuildProductionSnapshotAsync(activeProductionOrders, null, cancellationToken, manualInitialStockByItemId);
+
+        var itemIds = order.Items.Select(x => x.Id).ToHashSet();
+        var duplicateItemIds = dto.Decisions
+            .GroupBy(x => x.OrderItemId)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicateItemIds.Count > 0)
+        {
+            throw new InvalidOperationException($"Duplicate production decisions found for order item IDs: {string.Join(", ", duplicateItemIds)}.");
+        }
+
+        foreach (var decisionDto in dto.Decisions)
+        {
+            if (!itemIds.Contains(decisionDto.OrderItemId))
+            {
+                throw new InvalidOperationException($"Order item {decisionDto.OrderItemId} does not belong to order {order.Id}.");
+            }
+
+            var existingDecision = await _dbContext.ProductionDecisions
+                .FirstOrDefaultAsync(x => x.OrderItemId == decisionDto.OrderItemId, cancellationToken);
+
+            if (!calculatedByItemId.TryGetValue(decisionDto.OrderItemId, out var calculated))
+            {
+                throw new InvalidOperationException($"Could not calculate production values for order item {decisionDto.OrderItemId}.");
+            }
+
+            var persistedProductionRequired = decisionDto.IsSufficient ? 0 : calculated.ComputedProductionRequired;
+
+            _logger.LogInformation(
+                "[PRODUCTION CALC RESULT] OrderId={OrderId}, OrderItemId={OrderItemId}, RequiredStock={RequiredStock}, CurrentStock={CurrentStock}, Difference={Difference}, ProductionRequired={ProductionRequired}, RemainingStock={RemainingStock}, IsSufficient={IsSufficient}",
+                dto.OrderId,
+                decisionDto.OrderItemId,
+                calculated.RequiredStock,
+                calculated.CurrentStock,
+                calculated.Difference,
+                persistedProductionRequired,
+                calculated.RemainingStock,
+                decisionDto.IsSufficient);
+
+            if (existingDecision is null)
+            {
+                existingDecision = new ProductionDecision
+                {
+                    OrderItemId = decisionDto.OrderItemId,
+                    IsSufficient = decisionDto.IsSufficient,
+                    RequiredStock = calculated.RequiredStock,
+                    CurrentStock = calculated.CurrentStock,
+                    Difference = calculated.Difference,
+                    RequiredProductionQty = persistedProductionRequired,
+                    RemainingStock = calculated.RemainingStock,
+                    Notes = decisionDto.Notes
+                };
+
+                _dbContext.ProductionDecisions.Add(existingDecision);
+            }
+            else
+            {
+                existingDecision.IsSufficient = decisionDto.IsSufficient;
+                existingDecision.RequiredStock = calculated.RequiredStock;
+                existingDecision.CurrentStock = calculated.CurrentStock;
+                existingDecision.Difference = calculated.Difference;
+                existingDecision.RequiredProductionQty = persistedProductionRequired;
+                existingDecision.RemainingStock = calculated.RemainingStock;
+                existingDecision.Notes = decisionDto.Notes;
+            }
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        var decisionsRecorded = await _dbContext.ProductionDecisions
+            .CountAsync(x => x.OrderItem != null && x.OrderItem.OrderId == order.Id, cancellationToken);
+        var totalOrderItems = order.Items.Count;
+
+        var decisionsByOrderItem = await _dbContext.ProductionDecisions
+            .Where(x => x.OrderItem != null && x.OrderItem.OrderId == order.Id)
+            .ToDictionaryAsync(x => x.OrderItemId, cancellationToken);
+
+        var allItemsResolved = order.Items.All(item =>
+            decisionsByOrderItem.TryGetValue(item.Id, out var decision)
+            && (decision.IsSufficient || decision.RequiredProductionQty >= 0));
+
+        Console.WriteLine($"[PROCESS VALIDATION] OrderId: {order.Id}, AllItemsResolved: {allItemsResolved}");
+
+        if (decisionsRecorded == totalOrderItems && !allItemsResolved)
+        {
+            throw new InvalidOperationException("All items must be confirmed before processing");
+        }
+
+        if (totalOrderItems > 0 && decisionsRecorded == totalOrderItems && allItemsResolved && order.Status != OrderStatus.Processed)
+        {
+            order.Status = OrderStatus.Processed;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        var lines = dto.Decisions
+            .Where(x => calculatedByItemId.ContainsKey(x.OrderItemId))
+            .Select(x =>
+            {
+                var calculated = calculatedByItemId[x.OrderItemId];
+                return new ProductionDecisionLineResultDto
+                {
+                    OrderItemId = x.OrderItemId,
+                    CurrentStock = calculated.CurrentStock,
+                    RequiredStock = calculated.RequiredStock,
+                    RemainingStock = calculated.RemainingStock,
+                    Difference = calculated.Difference,
+                    RequiredProductionQty = x.IsSufficient ? 0 : calculated.ComputedProductionRequired,
+                    IsSufficient = x.IsSufficient
+                };
+            })
+            .OrderBy(x => x.OrderItemId)
+            .ToList();
+
+        return new ProductionDecisionResultDto
+        {
+            OrderId = order.Id,
+            Status = order.Status.ToString(),
+            DecisionsRecorded = decisionsRecorded,
+            TotalOrderItems = totalOrderItems,
+            IsProcessed = order.Status == OrderStatus.Processed,
+            WasReopenedForEdit = reopenedForEdit,
+            Lines = lines
+        };
     }
 
     public async Task CreateOrUpdatePlanAsync(ProductionPlanUpsertDto dto, CancellationToken cancellationToken = default)
@@ -327,9 +589,7 @@ public class ProductionService : IProductionService
 
         var demandByProduct = await _dbContext.OrderItems
             .AsNoTracking()
-            .Where(x => x.Order != null
-                && x.Order.DeliveryDate.Date == planDate.Date
-                && (x.Order.Status == OrderStatus.Approved || x.Order.Status == OrderStatus.Processed))
+            .Where(ApplyProductionDemandScope(planDate))
             .GroupBy(x => new { x.ProductId, ProductName = x.Product!.Name })
             .Select(g => new
             {
@@ -370,15 +630,134 @@ public class ProductionService : IProductionService
     {
         return await _dbContext.OrderItems
             .AsNoTracking()
-            .Where(x => x.ProductId == productId
-                && x.Order != null
-                && x.Order.DeliveryDate.Date == date.Date
-                && (x.Order.Status == OrderStatus.Approved || x.Order.Status == OrderStatus.Processed))
+            .Where(ApplyProductionDemandScope(date))
+            .Where(x => x.ProductId == productId)
             .SumAsync(x => (decimal?)x.Quantity, cancellationToken) ?? 0;
+    }
+
+    private static System.Linq.Expressions.Expression<Func<OrderItem, bool>> ApplyProductionDemandScope(DateTime date)
+    {
+        var targetDate = date.Date;
+        return x => x.Order != null
+            && x.Order.DeliveryDate.Date == targetDate
+            && OrderWorkflowStatusRules.ProductionDemandQueryableStatuses.Contains(x.Order.Status);
     }
 
     private static DateTime ToDbDate(DateTime input)
     {
         return DateTime.SpecifyKind(input.Date, DateTimeKind.Unspecified);
+    }
+
+    private async Task<Dictionary<int, ProductionItemCalculation>> BuildProductionSnapshotAsync(
+        List<Order> orderedProductionOrders,
+        DateTime? planningDate,
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<int, decimal>? manualInitialStockByItemId = null)
+    {
+        _ = planningDate;
+
+        var productIds = orderedProductionOrders
+            .SelectMany(order => order.Items.Select(item => item.ProductId))
+            .Distinct()
+            .ToList();
+
+        var stockByProduct = productIds.Count == 0
+            ? new Dictionary<int, decimal>()
+            : await _dbContext.Stocks
+                .AsNoTracking()
+                .Where(x => productIds.Contains(x.ProductId))
+                .ToDictionaryAsync(x => x.ProductId, x => x.Quantity, cancellationToken);
+
+        var calculatedByItemId = new Dictionary<int, ProductionItemCalculation>();
+
+        var itemsByProduct = orderedProductionOrders
+            .SelectMany(order => order.Items.Select(item => new { Order = order, Item = item }))
+            .GroupBy(x => x.Item.ProductId)
+            .ToList();
+
+        foreach (var productGroup in itemsByProduct)
+        {
+            var productId = productGroup.Key;
+            var runningStock = stockByProduct.TryGetValue(productId, out var persistedStock)
+                ? persistedStock
+                : 0;
+
+            var orderedProductItems = productGroup
+                .OrderBy(x => x.Order.DeliveryDate)
+                .ThenBy(x => x.Order.OrderNumber)
+                .ThenBy(x => x.Item.Id)
+                .ToList();
+
+            foreach (var orderedItem in orderedProductItems)
+            {
+                var item = orderedItem.Item;
+
+                var requiredStock = item.Quantity;
+                var beforeStock = runningStock;
+                var manualOverrideApplied = false;
+                var persistedDecisionStockApplied = false;
+
+                var existingDecision = item.ProductionDecisions?
+                    .OrderByDescending(x => x.Id)
+                    .FirstOrDefault();
+
+                if (manualInitialStockByItemId is not null
+                    && manualInitialStockByItemId.TryGetValue(item.Id, out var manualInitialStock))
+                {
+                    beforeStock = manualInitialStock;
+                    manualOverrideApplied = true;
+                }
+                else if (existingDecision is not null)
+                {
+                    beforeStock = existingDecision.CurrentStock;
+                    persistedDecisionStockApplied = true;
+                }
+
+                var currentStock = beforeStock;
+
+                decimal difference;
+                decimal productionRequired;
+                decimal remainingStock;
+
+                difference = beforeStock - requiredStock;
+                productionRequired = difference < 0 ? Math.Abs(difference) : 0;
+                remainingStock = difference;
+
+                if (!manualOverrideApplied && !persistedDecisionStockApplied)
+                {
+                    // Cascade only when no explicit per-line stock is supplied/stored.
+                    runningStock = Math.Max(remainingStock, 0);
+                }
+
+                Console.WriteLine($"[STOCK CASCADE] ProductId: {productId}, Before: {beforeStock}, After: {runningStock}");
+                _logger.LogInformation(
+                    "[PRODUCTION CALC RESULT] OrderItemId={OrderItemId}, ProductId={ProductId}, ManualOverrideApplied={ManualOverrideApplied}, PersistedDecisionStockApplied={PersistedDecisionStockApplied}, RequiredStock={RequiredStock}, CurrentStock={CurrentStock}, ComputedProductionRequired={ComputedProductionRequired}, RemainingStock={RemainingStock}",
+                    item.Id,
+                    productId,
+                    manualOverrideApplied,
+                    persistedDecisionStockApplied,
+                    requiredStock,
+                    currentStock,
+                    productionRequired,
+                    remainingStock);
+
+                calculatedByItemId[item.Id] = new ProductionItemCalculation
+                {
+                    OrderItemId = item.Id,
+                    RequiredStock = requiredStock,
+                    CurrentStock = currentStock,
+                    Difference = difference,
+                    ComputedProductionRequired = productionRequired,
+                    RemainingStock = remainingStock,
+                    DecisionIsSufficient = existingDecision?.IsSufficient,
+                    DecisionRequiredProductionQty = existingDecision?.RequiredProductionQty,
+                    DisplayProductionRequired = productionRequired,
+                    UsedPersistedDecisionStock = persistedDecisionStockApplied,
+                    UsedManualStock = manualOverrideApplied
+                };
+            }
+        }
+
+        return calculatedByItemId;
     }
 }

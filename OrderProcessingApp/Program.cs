@@ -38,7 +38,10 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Services
 builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
+builder.Services.AddScoped<IDistributionCentreResolver, DistributionCentreResolver>();
+builder.Services.AddScoped<IStockService, StockService>();
 builder.Services.AddScoped<IPalletService, PalletService>();
 builder.Services.AddScoped<IPendingCsvImportService, PendingCsvImportService>();
 builder.Services.AddScoped<IPlanningService, PlanningService>();
@@ -74,5 +77,3 @@ await app.Services.SeedCoreDataAsync();
 // ✅ Bind to Render port
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Run($"http://0.0.0.0:{port}");
-
-app.Run();

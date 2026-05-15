@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.Data;
 
@@ -29,13 +30,13 @@ public class ExportService : IExportService
             .ToListAsync(cancellationToken);
 
         var csv = new StringBuilder();
-        csv.AppendLine("OrderNumber,OrderDate,DeliveryDate,DistributionCentre,Status,SKU,Product,Quantity,Price,Pallets");
+        csv.AppendLine("OrderNumber|OrderDate|DeliveryDate|DistributionCentre|Status|SKU|Product|Quantity|Price|Pallets");
 
         foreach (var order in orders)
         {
             foreach (var item in order.Items)
             {
-                csv.AppendLine(string.Join(",", new[]
+                csv.AppendLine(string.Join("|", new[]
                 {
                     EscapeCsv(order.OrderNumber),
                     order.OrderDate.ToString("yyyy-MM-dd"),
@@ -44,12 +45,15 @@ public class ExportService : IExportService
                     EscapeCsv(order.Status.ToString()),
                     EscapeCsv(item.Product?.SKUCode ?? string.Empty),
                     EscapeCsv(item.Product?.Name ?? string.Empty),
-                    item.Quantity.ToString("0.##"),
-                    item.Price.ToString("0.00"),
-                    item.Pallets.ToString("0.##")
+                    FormatDecimal(item.Quantity, "0.##"),
+                    FormatDecimal(item.Price, "0.00"),
+                    FormatDecimal(item.Pallets, "0.##")
                 }));
             }
         }
+
+        var rowCount = orders.Sum(o => o.Items.Count);
+        Console.WriteLine($"[EXPORT] Generated report, rows: {rowCount}");
 
         return new ExportFileResult
         {
@@ -77,20 +81,22 @@ public class ExportService : IExportService
             .ToListAsync(cancellationToken);
 
         var csv = new StringBuilder();
-        csv.AppendLine("DistributionCentre,OrderNumber,DeliveryDate,Status,TotalPallets,Notes");
+        csv.AppendLine("DistributionCentre|OrderNumber|DeliveryDate|Status|TotalPallets|Notes");
 
         foreach (var schedule in schedules)
         {
-            csv.AppendLine(string.Join(",", new[]
+            csv.AppendLine(string.Join("|", new[]
             {
                 EscapeCsv(schedule.Order?.DistributionCentre?.Name ?? string.Empty),
                 EscapeCsv(schedule.Order?.OrderNumber ?? string.Empty),
                 schedule.DeliveryDate.ToString("yyyy-MM-dd"),
                 EscapeCsv(schedule.Status),
-                (schedule.Order?.Items.Sum(i => i.Pallets) ?? 0).ToString("0.##"),
+                FormatDecimal(schedule.Order?.Items.Sum(i => i.Pallets) ?? 0, "0.##"),
                 EscapeCsv(schedule.Notes ?? string.Empty)
             }));
         }
+
+        Console.WriteLine($"[EXPORT] Generated report, rows: {schedules.Count}");
 
         return new ExportFileResult
         {
@@ -114,11 +120,16 @@ public class ExportService : IExportService
 
     private static string EscapeCsv(string value)
     {
-        if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
+        if (value.Contains('|') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
         {
             return $"\"{value.Replace("\"", "\"\"")}\"";
         }
 
         return value;
+    }
+
+    private static string FormatDecimal(decimal value, string format)
+    {
+        return value.ToString(format, CultureInfo.InvariantCulture).Replace('.', ',');
     }
 }

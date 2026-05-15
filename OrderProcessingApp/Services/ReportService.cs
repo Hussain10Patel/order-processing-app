@@ -14,11 +14,60 @@ public class ReportService : IReportService
         _dbContext = dbContext;
     }
 
+    public async Task<List<ReportAvailableDateDto>> GetAvailableReportDatesAsync(CancellationToken cancellationToken = default)
+    {
+        var orderDates = await _dbContext.Orders
+            .AsNoTracking()
+            .Select(x => x.DeliveryDate.Date)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var deliveryDates = await _dbContext.DeliverySchedules
+            .AsNoTracking()
+            .Select(x => x.DeliveryDate.Date)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var pastelDates = await _dbContext.Orders
+            .AsNoTracking()
+            .Where(x => x.Status == OrderStatus.Approved || x.Status == OrderStatus.Processed)
+            .Select(x => x.DeliveryDate.Date)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var orderDateSet = orderDates.ToHashSet();
+        var deliveryDateSet = deliveryDates.ToHashSet();
+        var pastelDateSet = pastelDates.ToHashSet();
+
+        var allDates = orderDateSet
+            .Union(deliveryDateSet)
+            .OrderByDescending(x => x)
+            .ToList();
+
+        return allDates.Select(date =>
+        {
+            var hasOrders = orderDateSet.Contains(date);
+            var hasDeliveryRows = deliveryDateSet.Contains(date);
+            var hasSummaryRows = hasOrders;
+            var hasExportableRows = hasOrders || hasDeliveryRows || pastelDateSet.Contains(date);
+
+            return new ReportAvailableDateDto
+            {
+                Date = date.ToString("yyyy-MM-dd"),
+                HasOrders = hasOrders,
+                HasDeliveryRows = hasDeliveryRows,
+                HasSummaryRows = hasSummaryRows,
+                HasExportableRows = hasExportableRows
+            };
+        }).ToList();
+    }
+
     public async Task<ReportSummaryDto> GetSummaryByDeliveryDateAsync(DateTime date, CancellationToken cancellationToken = default)
     {
         var selectedDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
         var start = selectedDate.Date;
         var end = start.AddDays(1);
+        Console.WriteLine($"[REPORT QUERY] Using ScheduledDate: {selectedDate:yyyy-MM-dd}");
 
         var orders = await _dbContext.Orders
             .AsNoTracking()
@@ -103,6 +152,7 @@ public class ReportService : IReportService
     {
         Console.WriteLine($"Generating report for date {date:yyyy-MM-dd}");
         var dbDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
+        Console.WriteLine($"[REPORT QUERY] Using ScheduledDate: {dbDate:yyyy-MM-dd}");
         var start = dbDate.Date;
         var end = start.AddDays(1);
 
@@ -182,6 +232,7 @@ public class ReportService : IReportService
     {
         Console.WriteLine($"Generating report for date {date:yyyy-MM-dd}");
         var dbDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
+        Console.WriteLine($"[REPORT QUERY] Using ScheduledDate: {dbDate:yyyy-MM-dd}");
         var start = dbDate.Date;
         var end = start.AddDays(1);
 
@@ -307,9 +358,9 @@ public class ReportService : IReportService
         IReadOnlyDictionary<int, decimal> planQtyByProduct)
     {
         var hasDeliverySchedule = schedulesByOrder.ContainsKey(order.Id);
-        if (hasDeliverySchedule)
+        if (order.Status == OrderStatus.Scheduled || hasDeliverySchedule)
         {
-            return "Delivered";
+            return "Scheduled";
         }
 
         var requiredByProduct = order.Items
@@ -324,12 +375,17 @@ public class ReportService : IReportService
 
         if (order.Status == OrderStatus.Processed || isProductionComplete)
         {
-            return "Ready";
+            return "Processed";
         }
 
-        if (order.Status == OrderStatus.Approved || hasProduction)
+        if (order.Status == OrderStatus.InProduction || hasProduction)
         {
             return "InProduction";
+        }
+
+        if (order.Status == OrderStatus.Approved)
+        {
+            return "Approved";
         }
 
         return "Pending";

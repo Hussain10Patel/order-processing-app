@@ -22,6 +22,8 @@ public class DeliveryScheduleDto
     public string DistributionCentre { get; set; } = string.Empty;
     public string DeliveryDate { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string OrderStatus { get; set; } = string.Empty;
+    public bool IsOrderProcessed { get; set; }
     public string? Notes { get; set; }
     public decimal TotalPallets { get; set; }
 }

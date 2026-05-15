@@ -10,11 +10,13 @@ public class DeliveryService : IDeliveryService
 {
     private readonly AppDbContext _dbContext;
     private readonly IAuditService _auditService;
+    private readonly ILogger<DeliveryService> _logger;
 
-    public DeliveryService(AppDbContext dbContext, IAuditService auditService)
+    public DeliveryService(AppDbContext dbContext, IAuditService auditService, ILogger<DeliveryService> logger)
     {
         _dbContext = dbContext;
         _auditService = auditService;
+        _logger = logger;
     }
 
     public async Task<DeliveryScheduleDto> ScheduleDeliveryAsync(int orderId, DateTime deliveryDate, string? notes, CancellationToken cancellationToken = default)
@@ -34,10 +36,16 @@ public class DeliveryService : IDeliveryService
             throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
         }
 
-        if (order.Status == OrderStatus.Flagged)
+        if (!OrderWorkflowStatusRules.IsDeliveryEligible(order.Status))
         {
-            throw new InvalidOperationException("Flagged orders must be approved before scheduling");
+            throw new InvalidOperationException($"Delivery scheduling is only allowed for {OrderWorkflowStatusRules.DeliveryEligibleStatusLabel} orders. Current status: {order.Status}.");
         }
+
+        _logger.LogInformation("[DELIVERY STATUS FILTER] AllowedStatuses={Statuses}, OrderId={OrderId}, CurrentStatus={Status}", OrderWorkflowStatusRules.DeliveryEligibleStatusLabel, order.Id, order.Status);
+
+        Console.WriteLine($"[DELIVERY] Scheduling allowed. OrderId={order.Id}, OrderNumber={order.OrderNumber}, Status={order.Status}");
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
         var existing = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == orderId, cancellationToken);
@@ -95,8 +103,10 @@ public class DeliveryService : IDeliveryService
         Console.WriteLine($"[SCHEDULE] Saved date: {existing.DeliveryDate:O}");
         Console.WriteLine($"[SCHEDULE] Kind: {existing.DeliveryDate.Kind}");
         Console.WriteLine($"[ScheduleDeliveryAsync] Persisting DeliverySchedule.DeliveryDate={existing.DeliveryDate:yyyy-MM-dd} and Order.DeliveryDate={order.DeliveryDate:yyyy-MM-dd} for OrderId={orderId}");
+        Console.WriteLine($"[DELIVERY] Order status unchanged after scheduling. OrderId={order.Id}, Status={order.Status}");
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         return new DeliveryScheduleDto
         {
@@ -106,80 +116,167 @@ public class DeliveryService : IDeliveryService
             DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
             DeliveryDate = existing.DeliveryDate.ToString("yyyy-MM-dd"),
             Status = existing.Status,
+            OrderStatus = order.Status.ToString(),
+            IsOrderProcessed = order.Status == OrderStatus.Processed,
             Notes = existing.Notes,
             TotalPallets = order.TotalPallets > 0 ? order.TotalPallets : order.Items.Sum(x => x.Pallets)
         };
     }
 
-    public async Task<List<DeliveryScheduleDto>> GetScheduleByDateAsync(DateTime date, CancellationToken cancellationToken = default)
+    public async Task<List<DeliveryScheduleDto>> GetScheduleByDateAsync(DateTime? date, CancellationToken cancellationToken = default)
     {
-        var normalized = NormalizeDate(date);
-        var start = normalized.Date;
-        var end = start.AddDays(1);
-        Console.WriteLine($"[FETCH] Incoming date: {date:O}");
-        Console.WriteLine($"[FETCH] Normalized date: {normalized:O}");
-        Console.WriteLine($"Filtering deliveries by date: {normalized:yyyy-MM-dd}");
+        var normalized = date.HasValue ? NormalizeDate(date.Value) : (DateTime?)null;
+        _logger.LogInformation("[DELIVERY LOAD START] Endpoint: GetScheduleByDate, Date: {Date}", normalized?.ToString("yyyy-MM-dd") ?? "(null)");
+        Console.WriteLine($"[FETCH] Incoming date: {(date.HasValue ? date.Value.ToString("O") : "(null)")}");
+        Console.WriteLine($"[FETCH] Normalized date: {(normalized.HasValue ? normalized.Value.ToString("O") : "(null)")}");
+        Console.WriteLine("Fetching all scheduled deliveries (date parameter is treated as display metadata only).");
 
-        var schedules = await _dbContext.DeliverySchedules
-            .AsNoTracking()
-            .Include(x => x.Order)
-                .ThenInclude(x => x!.DistributionCentre)
-            .Include(x => x.Order)
-                .ThenInclude(x => x!.Items)
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end)
-            .OrderBy(x => x.Order!.DistributionCentre!.Name)
-            .ThenBy(x => x.Order!.OrderNumber)
-            .ToListAsync(cancellationToken);
-
-        foreach (var schedule in schedules)
+        try
         {
-            Console.WriteLine($"[MATCH] Found order {schedule.OrderId} with date {schedule.DeliveryDate:O}");
+            var query = _dbContext.DeliverySchedules
+                .AsNoTracking()
+                .IgnoreQueryFilters()
+                .Include(x => x.Order)
+                    .ThenInclude(x => x!.DistributionCentre)
+                .Include(x => x.Order)
+                    .ThenInclude(x => x!.Items)
+                        .ThenInclude(x => x.Product)
+                .Where(x => x.Order != null);
+
+            var schedules = await query
+                .OrderBy(x => x.Order!.DistributionCentre!.Name)
+                .ThenBy(x => x.Order!.OrderNumber)
+                .ToListAsync(cancellationToken);
+
+            _logger.LogInformation("[DELIVERY LOAD ALL] Endpoint=GetScheduleByDate, Classification=HasDeliveryScheduleRow, ReturnedSchedules={Count}", schedules.Count);
+
+            var output = new List<DeliveryScheduleDto>();
+            foreach (var schedule in schedules)
+            {
+                try
+                {
+                    var order = schedule.Order;
+                    _logger.LogInformation(
+                        "[DELIVERY ORDER] Endpoint: GetScheduleByDate, OrderId: {OrderId}, OrderNumber: {OrderNumber}, DistributionCentreId: {DistributionCentreId}, DistributionCentreName: {DistributionCentreName}",
+                        order?.Id,
+                        order?.OrderNumber ?? string.Empty,
+                        order?.DistributionCentreId,
+                        order?.DistributionCentre?.Name ?? string.Empty);
+
+                    if (order is null)
+                    {
+                        _logger.LogWarning("[DELIVERY ORDER] Endpoint: GetScheduleByDate, Malformed schedule detected. ScheduleId: {ScheduleId}, Reason: Order is null", schedule.Id);
+                        continue;
+                    }
+
+                    foreach (var item in order.Items)
+                    {
+                        _logger.LogInformation(
+                            "[DELIVERY ITEM] Endpoint: GetScheduleByDate, OrderId: {OrderId}, OrderItemId: {OrderItemId}, ProductId: {ProductId}, ProductName: {ProductName}, SKUCode: {SKUCode}",
+                            order.Id,
+                            item.Id,
+                            item.ProductId,
+                            item.Product?.Name ?? item.ProductName ?? string.Empty,
+                            item.Product?.SKUCode ?? string.Empty);
+                    }
+
+                    output.Add(new DeliveryScheduleDto
+                    {
+                        Id = schedule.Id,
+                        OrderId = schedule.OrderId,
+                        OrderNumber = order.OrderNumber ?? string.Empty,
+                        DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
+                        DeliveryDate = schedule.DeliveryDate.ToString("yyyy-MM-dd"),
+                        Status = schedule.Status,
+                        OrderStatus = order.Status.ToString(),
+                        IsOrderProcessed = order.Status == OrderStatus.Processed,
+                        Notes = schedule.Notes,
+                        TotalPallets = order.Items.Sum(i => i.Pallets)
+                    });
+                }
+                catch (Exception itemException)
+                {
+                    _logger.LogError(itemException, "[DELIVERY ERROR] Endpoint: GetScheduleByDate, ScheduleId: {ScheduleId}", schedule.Id);
+                }
+            }
+
+            return output;
         }
-
-        return schedules.Select(x => new DeliveryScheduleDto
+        catch (Exception exception)
         {
-            Id = x.Id,
-            OrderId = x.OrderId,
-            OrderNumber = x.Order?.OrderNumber ?? string.Empty,
-            DistributionCentre = x.Order?.DistributionCentre?.Name ?? string.Empty,
-            DeliveryDate = x.DeliveryDate.ToString("yyyy-MM-dd"),
-            Status = x.Status,
-            Notes = x.Notes,
-            TotalPallets = x.Order?.Items.Sum(i => i.Pallets) ?? 0
-        }).ToList();
+            _logger.LogError(exception, "[DELIVERY ERROR] Endpoint: GetScheduleByDate, Date: {Date}", normalized?.ToString("yyyy-MM-dd") ?? "(null)");
+            throw;
+        }
     }
 
-    public async Task<List<OrderDto>> GetUnscheduledOrdersByDateAsync(DateTime date, CancellationToken cancellationToken = default)
+    public async Task<List<OrderDto>> GetUnscheduledOrdersByDateAsync(DateTime? date, CancellationToken cancellationToken = default)
     {
-        var normalized = NormalizeDate(date);
-        var start = normalized.Date;
-        var end = start.AddDays(1);
-        Console.WriteLine($"[FETCH][UNSCHEDULED] Incoming date: {date:O}");
-        Console.WriteLine($"[FETCH][UNSCHEDULED] Normalized date: {normalized:O}");
-        Console.WriteLine($"Fetching unscheduled orders for {normalized:yyyy-MM-dd}");
-        Console.WriteLine("[FETCH][UNSCHEDULED] Source field: Order.DeliveryDate; scheduled exclusion field: DeliverySchedule.DeliveryDate");
+        var normalized = date.HasValue ? NormalizeDate(date.Value) : (DateTime?)null;
+        _logger.LogInformation("[DELIVERY LOAD START] Endpoint: GetUnscheduledOrdersByDate, Date: {Date}", normalized?.ToString("yyyy-MM-dd") ?? "(null)");
+        Console.WriteLine($"[FETCH][UNSCHEDULED] Incoming date: {(date.HasValue ? date.Value.ToString("O") : "(null)")}");
+        Console.WriteLine($"[FETCH][UNSCHEDULED] Normalized date: {(normalized.HasValue ? normalized.Value.ToString("O") : "(null)")}");
+        Console.WriteLine("Fetching all unscheduled eligible orders (date parameter is treated as display metadata only).");
+        Console.WriteLine("[FETCH][UNSCHEDULED] Classification field: DeliverySchedule.OrderId absence");
 
         var scheduledOrderIds = _dbContext.DeliverySchedules
             .AsNoTracking()
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end)
             .Select(x => x.OrderId);
 
-        var unscheduledOrders = await _dbContext.Orders
-            .AsNoTracking()
-            .Include(x => x.DistributionCentre)
-            .Include(x => x.Items)
-                .ThenInclude(x => x.Product)
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end && !scheduledOrderIds.Contains(x.Id))
-            .OrderBy(x => x.DistributionCentre!.Name)
-            .ThenBy(x => x.OrderNumber)
-            .ToListAsync(cancellationToken);
-
-        foreach (var order in unscheduledOrders)
+        try
         {
-            Console.WriteLine($"[MATCH] Found order {order.Id} with date {order.DeliveryDate:O}");
-        }
+            var eligibleOrders = _dbContext.Orders
+                .AsNoTracking()
+                .Include(x => x.DistributionCentre)
+                .Include(x => x.Items)
+                    .ThenInclude(x => x.Product)
+                .Where(x => OrderWorkflowStatusRules.DeliveryEligibleStatuses.Contains(x.Status)
+                    && !scheduledOrderIds.Contains(x.Id));
 
-        return unscheduledOrders.Select(MapOrderToDto).ToList();
+            var unscheduledOrders = await eligibleOrders
+                .OrderBy(x => x.DistributionCentre!.Name)
+                .ThenBy(x => x.OrderNumber)
+                .ToListAsync(cancellationToken);
+
+            _logger.LogInformation("[DELIVERY LOAD ALL] Endpoint=GetUnscheduledOrdersByDate, AllowedStatuses={Statuses}, Classification=NoDeliveryScheduleRow, ReturnedOrders={Count}", OrderWorkflowStatusRules.DeliveryEligibleStatusLabel, unscheduledOrders.Count);
+
+            var output = new List<OrderDto>();
+            foreach (var order in unscheduledOrders)
+            {
+                try
+                {
+                    _logger.LogInformation(
+                        "[DELIVERY ORDER] Endpoint: GetUnscheduledOrdersByDate, OrderId: {OrderId}, OrderNumber: {OrderNumber}, DistributionCentreId: {DistributionCentreId}, DistributionCentreName: {DistributionCentreName}",
+                        order.Id,
+                        order.OrderNumber,
+                        order.DistributionCentreId,
+                        order.DistributionCentre?.Name ?? string.Empty);
+
+                    foreach (var item in order.Items)
+                    {
+                        _logger.LogInformation(
+                            "[DELIVERY ITEM] Endpoint: GetUnscheduledOrdersByDate, OrderId: {OrderId}, OrderItemId: {OrderItemId}, ProductId: {ProductId}, ProductName: {ProductName}, SKUCode: {SKUCode}",
+                            order.Id,
+                            item.Id,
+                            item.ProductId,
+                            item.Product?.Name ?? item.ProductName ?? string.Empty,
+                            item.Product?.SKUCode ?? string.Empty);
+                    }
+
+                    output.Add(MapOrderToDto(order));
+                }
+                catch (Exception itemException)
+                {
+                    _logger.LogError(itemException, "[DELIVERY ERROR] Endpoint: GetUnscheduledOrdersByDate, OrderId: {OrderId}", order.Id);
+                }
+            }
+
+            return output;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(exception, "[DELIVERY ERROR] Endpoint: GetUnscheduledOrdersByDate, Date: {Date}", normalized?.ToString("yyyy-MM-dd") ?? "(null)");
+            throw;
+        }
     }
 
     private static DateTime NormalizeDate(DateTime date)
@@ -214,7 +311,7 @@ public class DeliveryService : IDeliveryService
                 Id = x.Id,
                 ProductId = x.ProductId,
                 ProductName = x.ProductName ?? x.Product?.Name ?? string.Empty,
-                ProductCode = x.ProductCode ?? string.Empty,
+                ProductCode = x.ProductCode ?? x.Product?.SKUCode ?? string.Empty,
                 SKUCode = x.Product?.SKUCode ?? string.Empty,
                 Quantity = x.Quantity,
                 Price = x.Price,

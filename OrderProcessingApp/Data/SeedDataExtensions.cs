@@ -189,6 +189,7 @@ public static class SeedDataExtensions
         CancellationToken cancellationToken)
     {
         var order = await dbContext.Orders
+            .IgnoreQueryFilters()
             .Include(x => x.Items)
             .Include(x => x.DeliverySchedules)
             .FirstOrDefaultAsync(x => x.OrderNumber == orderNumber, cancellationToken);
@@ -202,8 +203,14 @@ public static class SeedDataExtensions
             throw new InvalidOperationException($"Distribution centre '{distributionCentreId}' not found while seeding demo orders.");
         }
 
-        if (order is null)
+        if (order is not null)
         {
+            Console.WriteLine($"[SEED] Order exists (including inactive), skipping: {orderNumber}");
+        }
+        else
+        {
+            Console.WriteLine($"[SEED] Creating new order: {orderNumber}");
+
             order = new Order
             {
                 OrderNumber = orderNumber,
@@ -230,16 +237,8 @@ public static class SeedDataExtensions
             order.TotalValue = order.Items.Sum(x => x.Quantity * x.Price);
             order.TotalPallets = order.Items.Sum(x => x.Pallets);
             dbContext.Orders.Add(order);
+            await dbContext.SaveChangesAsync(cancellationToken);
         }
-        else
-        {
-            order.Status = status;
-            order.Notes = notes;
-            order.TotalValue = order.Items.Sum(x => x.Quantity * x.Price);
-            order.TotalPallets = order.Items.Sum(x => x.Pallets);
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
 
         var schedule = order.DeliverySchedules.FirstOrDefault(x => x.DeliveryDate == deliveryDate);
         if (schedule is null)
@@ -284,6 +283,22 @@ public static class SeedDataExtensions
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""IsMapped"" boolean NOT NULL DEFAULT TRUE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""RequiresAttention"" boolean NOT NULL DEFAULT FALSE;
             ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""CreatedAt"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
+                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RequiredStock"" numeric(18,2) NOT NULL DEFAULT 0; 
+                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""CurrentStock"" numeric(18,2) NOT NULL DEFAULT 0; 
+                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""Difference"" numeric(18,2) NOT NULL DEFAULT 0; 
+                ALTER TABLE ""ProductionDecisions"" ADD COLUMN IF NOT EXISTS ""RemainingStock"" numeric(18,2) NOT NULL DEFAULT 0; 
+                CREATE TABLE IF NOT EXISTS ""Stocks"" (
+                    ""Id"" serial NOT NULL,
+                    ""ProductId"" integer NOT NULL,
+                    ""Quantity"" numeric(18,2) NOT NULL DEFAULT 0,
+                    ""LastUpdated"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT ""PK_Stocks"" PRIMARY KEY (""Id""),
+                    CONSTRAINT ""FK_Stocks_Products_ProductId"" FOREIGN KEY (""ProductId"")
+                        REFERENCES ""Products"" (""Id"") ON DELETE CASCADE
+                );
+                ALTER TABLE ""Stocks"" ADD COLUMN IF NOT EXISTS ""Quantity"" numeric(18,2) NOT NULL DEFAULT 0;
+                ALTER TABLE ""Stocks"" ADD COLUMN IF NOT EXISTS ""LastUpdated"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP;
+                CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Stocks_ProductId"" ON ""Stocks"" (""ProductId"");
         ", cancellationToken);
 
         await dbContext.Database.ExecuteSqlRawAsync(@"
@@ -422,6 +437,44 @@ public static class SeedDataExtensions
                 CONSTRAINT ""PK_PendingCsvImportSessions"" PRIMARY KEY (""FileId"")
             );
             ALTER TABLE ""PendingCsvImportSessions"" ADD COLUMN IF NOT EXISTS ""MissingProductsJson"" text NOT NULL DEFAULT '[]';
+        ", cancellationToken);
+
+        await dbContext.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""PricePromotions"" (
+                ""Id"" serial NOT NULL,
+                ""ProductId"" integer NOT NULL,
+                ""DistributionCentreId"" integer NOT NULL,
+                ""PromoPrice"" numeric(18,2) NOT NULL,
+                ""StartDate"" timestamp without time zone NOT NULL,
+                ""EndDate"" timestamp without time zone NOT NULL,
+                ""IsActive"" boolean NOT NULL DEFAULT TRUE,
+                ""CreatedAt"" timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ""PK_PricePromotions"" PRIMARY KEY (""Id""),
+                CONSTRAINT ""FK_PricePromotions_Products_ProductId"" FOREIGN KEY (""ProductId"")
+                    REFERENCES ""Products"" (""Id"") ON DELETE CASCADE,
+                CONSTRAINT ""FK_PricePromotions_DistributionCentres_DistributionCentreId"" FOREIGN KEY (""DistributionCentreId"")
+                    REFERENCES ""DistributionCentres"" (""Id"") ON DELETE CASCADE
+            );
+        ", cancellationToken);
+
+        await dbContext.Database.ExecuteSqlRawAsync(@"
+            WITH ranked AS (
+                SELECT
+                    ""Id"",
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ""ProductId"", ""DistributionCentreId"", ""StartDate"", ""EndDate""
+                        ORDER BY ""IsActive"" DESC, ""CreatedAt"" DESC, ""Id"" DESC
+                    ) AS row_num
+                FROM ""PricePromotions""
+            )
+            DELETE FROM ""PricePromotions"" p
+            USING ranked r
+            WHERE p.""Id"" = r.""Id""
+                AND r.row_num > 1;
+
+            DROP INDEX IF EXISTS ""IX_PricePromotions_ProductId_DistributionCentreId_StartDate_EndDate"";
+            CREATE UNIQUE INDEX IF NOT EXISTS ""IX_PricePromotions_ProductId_DistributionCentreId_StartDate_EndDate""
+                ON ""PricePromotions"" (""ProductId"", ""DistributionCentreId"", ""StartDate"", ""EndDate"");
         ", cancellationToken);
 
         await dbContext.Database.ExecuteSqlRawAsync(@"

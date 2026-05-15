@@ -12,6 +12,9 @@ public class OrderItemDto
     public decimal Pallets { get; set; }
     public decimal LineTotal { get; set; }
     public bool IsUnmapped { get; set; }
+    public decimal? BasePrice { get; set; }
+    public decimal? PromoPrice { get; set; }
+    public decimal? EffectivePrice { get; set; }
     public bool IsPriceMissing { get; set; }
     public bool IsPriceMismatch { get; set; }
     public bool IsCsvPrice { get; set; }

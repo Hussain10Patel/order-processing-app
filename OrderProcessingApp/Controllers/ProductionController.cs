@@ -50,12 +50,57 @@ public class ProductionController : ControllerBase
         }
     }
 
-    [HttpGet]
-    public async Task<ActionResult<ProductionResponseDto>> GetByDate([FromQuery] DateTime date, CancellationToken cancellationToken)
+    [HttpPost("decisions")]
+    public async Task<ActionResult<ProductionDecisionResultDto>> SaveDecisions([FromBody] SaveProductionDecisionsDto dto, CancellationToken cancellationToken)
     {
-        Console.WriteLine($"[DATE FLOW] Controller incoming date: {date:O}, Kind={date.Kind}");
-        var result = await _productionService.GetProductionByDateAsync(date, cancellationToken);
-        return Ok(result);
+        if (dto.Decisions == null || dto.Decisions.Count == 0)
+        {
+            return BadRequest(new { message = "At least one production decision is required." });
+        }
+
+        try
+        {
+            var result = await _productionService.SaveProductionDecisionsAsync(dto, cancellationToken);
+            return Ok(result);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return UnprocessableEntity(new
+            {
+                errorCode = "PRODUCTION_DECISION_EDIT_BLOCKED",
+                message = ex.Message
+            });
+        }
+    }
+
+    [HttpPost("decision")]
+    public Task<ActionResult<ProductionDecisionResultDto>> SaveDecision([FromBody] SaveProductionDecisionsDto dto, CancellationToken cancellationToken)
+    {
+        return SaveDecisions(dto, cancellationToken);
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> Get([FromQuery] DateTime? date, CancellationToken cancellationToken)
+    {
+        if (date.HasValue)
+        {
+            Console.WriteLine($"[DATE FLOW] Controller incoming date: {date:O}, Kind={date.Value.Kind}");
+        }
+
+        var result = await _productionService.GetProductionAsync(date, cancellationToken);
+        var orders = result.Orders;
+
+        Console.WriteLine($"[PRODUCTION] Returning {orders.Count} visible order(s) to client.");
+        foreach (var o in orders)
+        {
+            Console.WriteLine($"[PRODUCTION][RESPONSE] Id={o.OrderId}, Number={o.OrderNumber}, Status={o.Status}");
+        }
+
+        return Ok(new { orders });
     }
 
     [HttpGet("plans")]

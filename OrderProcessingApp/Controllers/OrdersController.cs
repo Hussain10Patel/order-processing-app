@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Services;
 
@@ -58,35 +59,53 @@ public class OrdersController : ControllerBase
         CancellationToken cancellationToken)
     {
         Console.WriteLine($"Retry import started for file {dto.FileId}. CreateMissing={dto.CreateMissing}, CreateMissingProducts={dto.CreateMissingProducts}");
-
-        var pendingImport = await _pendingCsvImportService.GetAsync(dto.FileId, cancellationToken);
-        if (pendingImport is null)
+        try
         {
-            return NotFound(new { message = "Pending import not found or expired." });
-        }
-
-        if (dto.CreateMissing && pendingImport.MissingDistributionCentres.Count > 0)
-        {
-            await _orderService.CreateMissingDistributionCentresAsync(new CreateMissingDistributionCentresRequestDto
+            var pendingImport = await _pendingCsvImportService.GetAsync(dto.FileId, cancellationToken);
+            if (pendingImport is null)
             {
-                Centres = pendingImport.MissingDistributionCentres,
-                DistributionCentreId = dto.DistributionCentreId
-            }, cancellationToken);
+                return NotFound(new { message = "Pending import not found or expired." });
+            }
+
+            if (dto.CreateMissing && pendingImport.MissingDistributionCentres.Count > 0)
+            {
+                await _orderService.CreateMissingDistributionCentresAsync(new CreateMissingDistributionCentresRequestDto
+                {
+                    Centres = pendingImport.MissingDistributionCentres,
+                    DistributionCentreId = dto.DistributionCentreId
+                }, cancellationToken);
+            }
+
+            var processingResult = await _orderService.CreateOrdersFromCsvRowsAsync(pendingImport.Rows, pendingImport.AllowDuplicates, dto.CreateMissingProducts, cancellationToken);
+            var result = processingResult.Result;
+
+            if (processingResult.PendingRows.Count > 0)
+            {
+                result.FileId = await _pendingCsvImportService.SaveAsync(dto.FileId, processingResult.PendingRows, pendingImport.AllowDuplicates, result.MissingDistributionCentres, result.MissingProducts, cancellationToken);
+            }
+            else
+            {
+                await _pendingCsvImportService.RemoveAsync(dto.FileId, cancellationToken);
+            }
+
+            return Ok(result);
         }
-
-        var processingResult = await _orderService.CreateOrdersFromCsvRowsAsync(pendingImport.Rows, pendingImport.AllowDuplicates, dto.CreateMissingProducts, cancellationToken);
-        var result = processingResult.Result;
-
-        if (processingResult.PendingRows.Count > 0)
+        catch (InvalidOperationException ex)
         {
-            result.FileId = await _pendingCsvImportService.SaveAsync(dto.FileId, processingResult.PendingRows, pendingImport.AllowDuplicates, result.MissingDistributionCentres, result.MissingProducts, cancellationToken);
+            return BadRequest(new
+            {
+                errorCode = "CSV_RETRY_IMPORT_INVALID_OPERATION",
+                message = ex.Message
+            });
         }
-        else
+        catch (DbUpdateException ex)
         {
-            await _pendingCsvImportService.RemoveAsync(dto.FileId, cancellationToken);
+            return Conflict(new
+            {
+                errorCode = "CSV_RETRY_IMPORT_DB_CONFLICT",
+                message = ex.InnerException?.Message ?? ex.Message
+            });
         }
-
-        return Ok(result);
     }
 
     [HttpGet]
@@ -258,5 +277,23 @@ public class OrdersController : ControllerBase
         }
 
         return Ok(order);
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> DeleteOrder(int id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _orderService.SoftDeleteOrderAsync(id, cancellationToken);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return UnprocessableEntity(new { message = ex.Message });
+        }
     }
 }

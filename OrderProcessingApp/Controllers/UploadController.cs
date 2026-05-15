@@ -202,7 +202,8 @@ public class UploadController : ControllerBase
             try
             {
                 var values = parser?.Record ?? Array.Empty<string>();
-                var rowError = TryParseRow(file.FileName, rowNumber, values, headerMap, errors, out var row);
+                var rawRowText = parser?.RawRecord ?? string.Empty;
+                var rowError = TryParseRow(file.FileName, rowNumber, values, rawRowText, headerMap, errors, _logger, out var row);
                 if (rowError is not null)
                 {
                     skippedRows++;
@@ -217,6 +218,22 @@ public class UploadController : ControllerBase
                     _logger.LogWarning("CSV import skipped line {LineNumber} in {FileName}: {Message}", rowNumber, file.FileName, rowError.Message);
                     continue;
                 }
+
+                var vendor = row!.Metadata.TryGetValue("Vendor", out var vendorValue) ? vendorValue : string.Empty;
+                var depot = row.Metadata.TryGetValue("Depot", out var depotValue) ? depotValue : string.Empty;
+                var destId = row.Metadata.TryGetValue("DestID", out var destIdValue) ? destIdValue : string.Empty;
+                var destDesc = row.Metadata.TryGetValue("DestDesc", out var destDescValue) ? destDescValue : string.Empty;
+
+                _logger.LogInformation(
+                    "[CSV DC RAW] Vendor: {Vendor}, Depot: {Depot}, DestID: {DestID}, DestDesc: {DestDesc}",
+                    vendor,
+                    depot,
+                    destId,
+                    destDesc);
+                _logger.LogInformation(
+                    "[CSV DC RESOLVED] ChosenDCName: {ChosenDCName}, ChosenDCId: {ChosenDCId}",
+                    row.DistributionCentre,
+                    string.IsNullOrWhiteSpace(destId) ? null : destId);
 
                 rows.Add(row!);
             }
@@ -269,8 +286,10 @@ public class UploadController : ControllerBase
         string fileName,
         int lineNumber,
         IReadOnlyList<string> values,
+        string rawRowText,
         CsvHeaderMap headerMap,
         List<CsvUploadErrorDto> errors,
+        ILogger<UploadController> logger,
         out CsvOrderRowDto? row)
     {
         row = null;
@@ -278,13 +297,42 @@ public class UploadController : ControllerBase
         var orderNumber = GetMappedValue(values, headerMap.OrderNumberIndex);
         var orderDateText = GetMappedValue(values, headerMap.OrderDateIndex);
         var deliveryDateText = GetMappedValue(values, headerMap.DeliveryDateIndex);
-        var distributionCentre = GetMappedValue(values, headerMap.DistributionCentreIndex);
+        var distributionCentreFromGenericColumn = GetMappedValue(values, headerMap.DistributionCentreIndex);
+        var destId = GetMappedValue(values, headerMap.DestIdIndex);
+        var destDesc = GetMappedValue(values, headerMap.DestDescIndex);
+        var vendor = GetMappedValue(values, headerMap.VendorIndex);
+        var depot = GetMappedValue(values, headerMap.DepotIndex);
+        var distributionCentre = !string.IsNullOrWhiteSpace(destDesc)
+            ? destDesc
+            : !string.IsNullOrWhiteSpace(distributionCentreFromGenericColumn)
+                ? distributionCentreFromGenericColumn
+                : destId;
         var productCode = GetMappedValue(values, headerMap.ProductCodeIndex);
         var productName = GetMappedValue(values, headerMap.ProductNameIndex);
         var product = GetMappedValue(values, headerMap.ProductIndex);
         var quantityText = GetMappedValue(values, headerMap.QuantityIndex);
-        var priceText = GetMappedValue(values, headerMap.PriceIndex);
+        var costPerText = GetMappedValue(values, headerMap.CostPerIndex);
+        var grossCstText = GetMappedValue(values, headerMap.GrossCostIndex);
+        var exetendCstText = GetMappedValue(values, headerMap.ExetendCostIndex);
         var metadata = BuildMetadata(values, headerMap);
+
+        logger.LogInformation(
+            "[CSV FIELD INDEX] RowNumber: {RowNumber}, RawRowText: {RawRowText}, QtyIndex: {QtyIndex}, CostperIndex: {CostperIndex}, GrossCstIndex: {GrossCstIndex}, ExetendCstIndex: {ExetendCstIndex}",
+            lineNumber,
+            rawRowText,
+            headerMap.QuantityIndex,
+            headerMap.CostPerIndex,
+            headerMap.GrossCostIndex,
+            headerMap.ExetendCostIndex);
+
+        logger.LogInformation(
+            "[CSV PARSED VALUES] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, GrossCst raw: {GrossCstRaw}, ExetendCst raw: {ExetendCstRaw}",
+            lineNumber,
+            rawRowText,
+            quantityText,
+            costPerText,
+            grossCstText,
+            exetendCstText);
         var resolvedProduct = !string.IsNullOrWhiteSpace(productCode)
             ? productCode
             : !string.IsNullOrWhiteSpace(productName)
@@ -306,8 +354,8 @@ public class UploadController : ControllerBase
         if (string.IsNullOrWhiteSpace(quantityText))
             return new RowValidationError("Quantity", "Quantity is required.");
 
-        if (string.IsNullOrWhiteSpace(priceText))
-            return new RowValidationError("Price", "Price is required");
+        if (string.IsNullOrWhiteSpace(costPerText))
+            return new RowValidationError("Costper", "Costper is required");
 
         if (!TryParseDate(orderDateText, out var orderDate))
             return new RowValidationError("OrderDate", $"Invalid date: '{orderDateText}'");
@@ -323,14 +371,115 @@ public class UploadController : ControllerBase
         }
 
         var quantity = SafeParseDecimal(quantityText, errors, fileName, lineNumber, "Quantity");
+        var quantityParsed = quantity is not null;
+        var costperParsed = TryParseDecimal(costPerText, out var parsedCostPer);
+
+        if (quantityParsed && !costperParsed)
+        {
+            logger.LogWarning(
+                "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: (invalid), Message: Costper parse failure while Qty parsed.",
+                lineNumber,
+                rawRowText,
+                quantityText,
+                costPerText,
+                quantity);
+        }
+
+        if (!quantityParsed && costperParsed)
+        {
+            logger.LogWarning(
+                "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: (invalid), Parsed price: {ParsedPrice}, Message: Qty parse failure while Costper parsed.",
+                lineNumber,
+                rawRowText,
+                quantityText,
+                costPerText,
+                parsedCostPer);
+        }
+
         if (quantity is null)
             return new RowValidationError("Quantity", $"Invalid number: '{quantityText}'");
 
-        if (!TryParseDecimal(priceText, out var price))
-            return new RowValidationError("Price", $"Invalid price '{priceText}' at row {lineNumber}");
+        if (!costperParsed)
+            return new RowValidationError("Costper", $"Invalid unit price '{costPerText}' at row {lineNumber}");
+
+        var price = parsedCostPer;
 
         if (price <= 0)
-            return new RowValidationError("Price", "Price must be greater than 0");
+            return new RowValidationError("Costper", "Costper must be greater than 0");
+
+        var supplierTotalRaw = !string.IsNullOrWhiteSpace(grossCstText)
+            ? grossCstText
+            : exetendCstText;
+
+        metadata["GrossCstRaw"] = grossCstText;
+        metadata["ExetendCstRaw"] = exetendCstText;
+
+        if (!string.IsNullOrWhiteSpace(grossCstText))
+        {
+            metadata["GrossCst"] = grossCstText;
+        }
+
+        if (!string.IsNullOrWhiteSpace(exetendCstText))
+        {
+            metadata["ExetendCst"] = exetendCstText;
+        }
+
+        if (!string.IsNullOrWhiteSpace(supplierTotalRaw))
+        {
+            metadata["SupplierLineTotalRaw"] = supplierTotalRaw;
+            if (TryParseDecimal(supplierTotalRaw, out var supplierLineTotal))
+            {
+                metadata["SupplierLineTotal"] = supplierLineTotal.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        metadata["QtyRaw"] = quantityText;
+        metadata["CostperRaw"] = costPerText;
+
+        if (TryParseDecimal(quantityText, out var qtyRawParsed)
+            && TryParseDecimal(costPerText, out var costRawParsed)
+            && quantity.Value == costRawParsed
+            && price == qtyRawParsed
+            && qtyRawParsed != costRawParsed)
+        {
+            logger.LogWarning(
+                "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: {ParsedPrice}, Message: Qty/Costper appear swapped.",
+                lineNumber,
+                rawRowText,
+                quantityText,
+                costPerText,
+                quantity.Value,
+                price);
+        }
+
+        logger.LogInformation(
+            "[CSV PRICE MAP] SKU: {Sku}, Qty raw value: {QtyRaw}, Costper raw value: {CostperRaw}, GrossCst raw value: {GrossCstRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: {ParsedPrice}",
+            resolvedProduct,
+            quantityText,
+            costPerText,
+            grossCstText,
+            quantity.Value,
+            price);
+
+        logger.LogInformation(
+            "[CSV RAW NUMBERS] SKU: {Sku}, QtyRaw: {QtyRaw}, CostperRaw: {CostperRaw}, GrossCstRaw: {GrossCstRaw}, ExetendCstRaw: {ExetendCstRaw}, ResolvedQuantity: {ResolvedQuantity}, ResolvedUnitPrice: {ResolvedUnitPrice}, LineTotal: {LineTotal}",
+            resolvedProduct,
+            metadata.TryGetValue("QtyRaw", out var qtyRawForNumbers) ? qtyRawForNumbers : string.Empty,
+            metadata.TryGetValue("CostperRaw", out var costperRawForNumbers) ? costperRawForNumbers : string.Empty,
+            metadata.TryGetValue("GrossCstRaw", out var grossRawForNumbers) ? grossRawForNumbers : string.Empty,
+            metadata.TryGetValue("ExetendCstRaw", out var exetendRawForNumbers) ? exetendRawForNumbers : string.Empty,
+            quantity.Value,
+            price,
+            quantity.Value * price);
+
+        logger.LogInformation(
+            "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: {ParsedPrice}",
+            lineNumber,
+            rawRowText,
+            quantityText,
+            costPerText,
+            quantity.Value,
+            price);
 
         row = new CsvOrderRowDto
         {
@@ -348,6 +497,36 @@ public class UploadController : ControllerBase
             Metadata = metadata
         };
 
+        if (!string.IsNullOrWhiteSpace(vendor))
+        {
+            row.Metadata["Vendor"] = vendor;
+        }
+
+        if (!string.IsNullOrWhiteSpace(depot))
+        {
+            row.Metadata["Depot"] = depot;
+        }
+
+        if (!string.IsNullOrWhiteSpace(destId))
+        {
+            row.Metadata["DestID"] = destId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(destDesc))
+        {
+            row.Metadata["DestDesc"] = destDesc;
+        }
+
+        // Trace parsed row values at parse stage.
+        logger.LogInformation(
+            "[CSV PARSED VALUES] SKU: {Sku}, Raw Qty: {RawQty}, Raw Costper: {RawCostper}, Resolved Quantity: {ResolvedQuantity}, Resolved Price: {ResolvedPrice}, Line Total: {LineTotal}",
+            resolvedProduct,
+            metadata.TryGetValue("QtyRaw", out var qtyRawForLog) ? qtyRawForLog : string.Empty,
+            metadata.TryGetValue("CostperRaw", out var costperRawForLog) ? costperRawForLog : string.Empty,
+            quantity.Value,
+            price,
+            quantity.Value * price);
+
         return null;
     }
 
@@ -361,8 +540,49 @@ public class UploadController : ControllerBase
 
     private static bool TryParseDecimal(string value, out decimal result)
     {
-        return decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out result)
-            || decimal.TryParse(value, NumberStyles.Number, CultureInfo.CurrentCulture, out result);
+        result = 0;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var compact = Regex.Replace(value, @"\s+", string.Empty)
+            .Replace("\u00A0", string.Empty)
+            .Trim();
+
+        if (decimal.TryParse(compact, NumberStyles.Number, CultureInfo.InvariantCulture, out result))
+        {
+            return true;
+        }
+
+        var normalized = NormalizeDecimalForInvariant(compact);
+        return decimal.TryParse(normalized, NumberStyles.Number, CultureInfo.InvariantCulture, out result);
+    }
+
+    private static string NormalizeDecimalForInvariant(string value)
+    {
+        var hasComma = value.Contains(',');
+        var hasDot = value.Contains('.');
+
+        if (hasComma && hasDot)
+        {
+            var lastComma = value.LastIndexOf(',');
+            var lastDot = value.LastIndexOf('.');
+
+            if (lastComma > lastDot)
+            {
+                return value.Replace(".", string.Empty).Replace(',', '.');
+            }
+
+            return value.Replace(",", string.Empty);
+        }
+
+        if (hasComma)
+        {
+            return value.Replace(',', '.');
+        }
+
+        return value;
     }
 
     private static decimal? SafeParseDecimal(
@@ -433,12 +653,18 @@ public class UploadController : ControllerBase
         var orderNumberIndex = FindHeaderIndex(normalizedHeaders, "ordernumber", "orderno", "order no", "order_no", "orderid", "order");
         var orderDateIndex = FindHeaderIndex(normalizedHeaders, "orderdate", "order date", "order_date", "dateordered");
         var deliveryDateIndex = FindHeaderIndex(normalizedHeaders, "deliverydate", "delivery date", "delivery_date", "required date", "dropdate", "drop date");
-        var distributionCentreIndex = FindHeaderIndex(normalizedHeaders, "distributioncentre", "distribution centre", "distributioncenter", "dc", "warehouse", "depot", "destdesc", "destination", "destinationdescription");
+        var distributionCentreIndex = FindHeaderIndex(normalizedHeaders, "distributioncentre", "distribution centre", "distributioncenter", "dc", "warehouse", "destination", "destinationdescription");
+        var destIdIndex = FindHeaderIndex(normalizedHeaders, "destid", "destinationid", "destination id", "destcode", "destinationcode", "destination code");
+        var destDescIndex = FindHeaderIndex(normalizedHeaders, "destdesc", "destinationdescription", "destination description", "destdescription", "destination", "destinationname", "destination name");
+        var vendorIndex = FindHeaderIndex(normalizedHeaders, "vendor", "vendorname", "vendor name", "logisticscompany", "logistics company");
+        var depotIndex = FindHeaderIndex(normalizedHeaders, "depot", "depotname", "depot name", "logisticsdepot", "logistics depot");
         var productCodeIndex = FindHeaderIndex(normalizedHeaders, "productcode", "product code", "sku", "sku code", "itemnum", "item num", "itemnumber", "item number");
         var productNameIndex = FindHeaderIndex(normalizedHeaders, "productname", "product name", "itemdesc", "item desc", "description");
         var productIndex = FindHeaderIndex(normalizedHeaders, "product", "item");
-        var quantityIndex = FindHeaderIndex(normalizedHeaders, "quantity", "qty", "qtyordered", "orderedqty", "units");
-        var priceIndex = FindHeaderIndex(normalizedHeaders, "price", "unitprice", "unit price", "sellingprice", "selling price", "rate", "amount", "costper", "cost per", "grosscst", "gross cost");
+        var quantityIndex = FindHeaderIndexExact(normalizedHeaders, "qty", "quantity", "qtyordered", "orderedqty", "units");
+        var costPerIndex = FindHeaderIndexExact(normalizedHeaders, "costper", "cost per", "cost_per");
+        var grossCostIndex = FindHeaderIndexExact(normalizedHeaders, "grosscst", "gross cost", "grosscost");
+        var exetendCostIndex = FindHeaderIndexExact(normalizedHeaders, "exetendcst", "extendedcst", "extendcst", "extended cost", "extend cost");
 
         var missingRequiredColumns = new List<string>();
         if (orderNumberIndex is null)
@@ -451,19 +677,25 @@ public class UploadController : ControllerBase
             missingRequiredColumns.Add("Product");
         if (quantityIndex is null)
             missingRequiredColumns.Add("Quantity");
-        if (priceIndex is null)
-            missingRequiredColumns.Add("Price");
+        if (costPerIndex is null)
+            missingRequiredColumns.Add("Costper");
 
         return new CsvHeaderMap(
             orderNumberIndex,
             orderDateIndex,
             deliveryDateIndex,
             distributionCentreIndex,
+            destIdIndex,
+            destDescIndex,
+            vendorIndex,
+            depotIndex,
             productCodeIndex,
             productNameIndex,
             productIndex,
             quantityIndex,
-            priceIndex,
+            costPerIndex,
+            grossCostIndex,
+            exetendCostIndex,
             headers.ToList(),
             missingRequiredColumns);
     }
@@ -476,11 +708,17 @@ public class UploadController : ControllerBase
             headerMap.OrderDateIndex,
             headerMap.DeliveryDateIndex,
             headerMap.DistributionCentreIndex,
+            headerMap.DestIdIndex,
+            headerMap.DestDescIndex,
+            headerMap.VendorIndex,
+            headerMap.DepotIndex,
             headerMap.ProductCodeIndex,
             headerMap.ProductNameIndex,
             headerMap.ProductIndex,
             headerMap.QuantityIndex,
-            headerMap.PriceIndex
+            headerMap.CostPerIndex,
+            headerMap.GrossCostIndex,
+            headerMap.ExetendCostIndex
         }.Where(index => index.HasValue).Select(index => index!.Value));
 
         var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -506,6 +744,24 @@ public class UploadController : ControllerBase
 
     private static int? FindHeaderIndex(IReadOnlyList<KeyValuePair<string, int>> normalizedHeaders, params string[] aliases)
     {
+        var exact = FindHeaderIndexExact(normalizedHeaders, aliases);
+        if (exact.HasValue)
+            return exact;
+
+        var normalizedAliases = aliases.Select(NormalizeHeader).ToArray();
+
+        foreach (var alias in normalizedAliases)
+        {
+            var partial = normalizedHeaders.FirstOrDefault(pair => pair.Key.Contains(alias, StringComparison.Ordinal));
+            if (!string.IsNullOrEmpty(partial.Key))
+                return partial.Value;
+        }
+
+        return null;
+    }
+
+    private static int? FindHeaderIndexExact(IReadOnlyList<KeyValuePair<string, int>> normalizedHeaders, params string[] aliases)
+    {
         var normalizedAliases = aliases.Select(NormalizeHeader).ToArray();
 
         foreach (var alias in normalizedAliases)
@@ -513,13 +769,6 @@ public class UploadController : ControllerBase
             var exact = normalizedHeaders.FirstOrDefault(pair => pair.Key == alias);
             if (!string.IsNullOrEmpty(exact.Key))
                 return exact.Value;
-        }
-
-        foreach (var alias in normalizedAliases)
-        {
-            var partial = normalizedHeaders.FirstOrDefault(pair => pair.Key.Contains(alias, StringComparison.Ordinal));
-            if (!string.IsNullOrEmpty(partial.Key))
-                return partial.Value;
         }
 
         return null;
@@ -541,11 +790,17 @@ public class UploadController : ControllerBase
         int? OrderDateIndex,
         int? DeliveryDateIndex,
         int? DistributionCentreIndex,
+        int? DestIdIndex,
+        int? DestDescIndex,
+        int? VendorIndex,
+        int? DepotIndex,
         int? ProductCodeIndex,
         int? ProductNameIndex,
         int? ProductIndex,
         int? QuantityIndex,
-        int? PriceIndex,
+        int? CostPerIndex,
+        int? GrossCostIndex,
+        int? ExetendCostIndex,
         List<string> Headers,
         List<string> MissingRequiredColumns);
 

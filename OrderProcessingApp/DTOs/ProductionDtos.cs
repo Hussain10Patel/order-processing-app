@@ -23,8 +23,36 @@ public class ProductionDto
 
 public class ProductionResponseDto
 {
-    public List<ProductionDto> Scheduled { get; set; } = new();
-    public List<ProductionDto> Unscheduled { get; set; } = new();
+    public List<ProductionOrderDto> Orders { get; set; } = new();
+}
+
+public class ProductionOrderDto
+{
+    public int OrderId { get; set; }
+    public string OrderNumber { get; set; } = string.Empty;
+    public DateTime DeliveryDate { get; set; }
+    public int DistributionCentreId { get; set; }
+    public string DistributionCentre { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public bool IsProcessed { get; set; }
+    public List<ProductionOrderItemDto> Items { get; set; } = new();
+}
+
+public class ProductionOrderItemDto
+{
+    public int OrderItemId { get; set; }
+    public int ProductId { get; set; }
+    public string ProductCode { get; set; } = string.Empty;
+    public string ProductName { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal Pallets { get; set; }
+    public decimal CurrentStock { get; set; }
+    public decimal RequiredStock { get; set; }
+    public decimal Difference { get; set; }
+    public decimal ProductionRequired { get; set; }
+    public decimal RemainingStock { get; set; }
+    public bool? DecisionIsSufficient { get; set; }
+    public decimal? DecisionRequiredProductionQty { get; set; }
 }
 
 public class ProductionPlanUpsertDto
@@ -67,5 +95,53 @@ public class StockCheckDto
     public decimal RequiredQuantity { get; set; }
     public decimal AvailableQuantity { get; set; }
     public decimal Shortfall { get; set; }
+    public bool IsSufficient { get; set; }
+}
+
+public class ProductionDecisionItemDto
+{
+    [Range(1, int.MaxValue)]
+    public int OrderItemId { get; set; }
+
+    public bool IsSufficient { get; set; }
+
+    [Range(typeof(decimal), "0", "999999999")]
+    public decimal RequiredProductionQty { get; set; }
+
+    [Range(typeof(decimal), "0", "999999999", ErrorMessage = "Manual initial stock must be zero or greater.")]
+    public decimal? ManualInitialStock { get; set; }
+
+    [StringLength(1000)]
+    public string? Notes { get; set; }
+}
+
+public class SaveProductionDecisionsDto
+{
+    [Range(1, int.MaxValue)]
+    public int OrderId { get; set; }
+
+    [MinLength(1, ErrorMessage = "At least one production decision is required.")]
+    public List<ProductionDecisionItemDto> Decisions { get; set; } = new();
+}
+
+public class ProductionDecisionResultDto
+{
+    public int OrderId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public int DecisionsRecorded { get; set; }
+    public int TotalOrderItems { get; set; }
+    public bool IsProcessed { get; set; }
+    public bool WasReopenedForEdit { get; set; }
+    public List<ProductionDecisionLineResultDto> Lines { get; set; } = new();
+}
+
+public class ProductionDecisionLineResultDto
+{
+    public int OrderItemId { get; set; }
+    public decimal CurrentStock { get; set; }
+    public decimal RequiredStock { get; set; }
+    public decimal RemainingStock { get; set; }
+    public decimal Difference { get; set; }
+    public decimal RequiredProductionQty { get; set; }
     public bool IsSufficient { get; set; }
 }

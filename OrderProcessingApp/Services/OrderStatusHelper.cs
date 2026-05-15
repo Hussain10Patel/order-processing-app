@@ -32,7 +32,7 @@ public static class OrderStatusHelper
     /// <summary>
     /// Gets the effective status for workflow decisions.
     /// Maps overlapping statuses (Validated, Approved) to "Approved" for transition logic.
-    /// Preserves Flagged, Processed for clear workflow paths.
+    /// Preserves downstream states for explicit workflow paths.
     /// </summary>
     public static OrderStatus GetEffectiveStatus(Order order)
     {
@@ -42,9 +42,14 @@ public static class OrderStatusHelper
         }
 
         // Terminal statuses are final
-        if (order.Status == OrderStatus.Processed)
+        if (order.Status == OrderStatus.Processed || order.Status == OrderStatus.Scheduled)
         {
-            return OrderStatus.Processed;
+            return order.Status;
+        }
+
+        if (order.Status == OrderStatus.InProduction)
+        {
+            return OrderStatus.InProduction;
         }
 
         // Both Approved and Validated represent "validated" state for workflow purposes
@@ -71,8 +76,10 @@ public static class OrderStatusHelper
             OrderStatus.Pending => targetEffective == OrderStatus.Flagged || targetEffective == OrderStatus.Approved,
             OrderStatus.Flagged => targetEffective == OrderStatus.Approved,
             OrderStatus.Validated => targetEffective == OrderStatus.Approved,
-            OrderStatus.Approved => targetEffective == OrderStatus.Processed,
-            OrderStatus.Processed => false, // Processed is terminal
+            OrderStatus.Approved => targetEffective == OrderStatus.InProduction,
+            OrderStatus.InProduction => targetEffective == OrderStatus.Processed,
+            OrderStatus.Processed => targetEffective == OrderStatus.Scheduled,
+            OrderStatus.Scheduled => false,
             _ => false
         };
     }

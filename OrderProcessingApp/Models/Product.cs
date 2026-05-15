@@ -8,6 +8,7 @@ public class Product
     public decimal PalletConversionRate { get; set; }
     public bool IsMapped { get; set; } = true;
     public bool RequiresAttention { get; set; }
+    public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
 
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();

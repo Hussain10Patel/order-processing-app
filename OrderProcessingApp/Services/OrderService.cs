@@ -1,9 +1,7 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using OrderProcessingApp.Data;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Models;
-using OrderProcessingApp.Options;
 using System.Globalization;
 
 namespace OrderProcessingApp.Services;
@@ -14,25 +12,28 @@ public class OrderService : IOrderService
     private readonly IPricingService _pricingService;
     private readonly IPalletService _palletService;
     private readonly IPlanningService _planningService;
+    private readonly IDistributionCentreResolver _distributionCentreResolver;
+    private readonly IStockService _stockService;
     private readonly IAuditService _auditService;
     private readonly ILogger<OrderService> _logger;
-    private readonly CsvImportOptions _csvImportOptions;
 
     public OrderService(
         AppDbContext dbContext,
         IPricingService pricingService,
         IPalletService palletService,
         IPlanningService planningService,
+        IDistributionCentreResolver distributionCentreResolver,
+        IStockService stockService,
         IAuditService auditService,
-        IOptions<CsvImportOptions> csvImportOptions,
         ILogger<OrderService> logger)
     {
         _dbContext = dbContext;
         _pricingService = pricingService;
         _palletService = palletService;
         _planningService = planningService;
+        _distributionCentreResolver = distributionCentreResolver;
+        _stockService = stockService;
         _auditService = auditService;
-        _csvImportOptions = csvImportOptions.Value;
         _logger = logger;
     }
 
@@ -97,12 +98,15 @@ public class OrderService : IOrderService
         var pendingRows = new List<CsvOrderRowDto>();
         var productsMissingPricing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var distributionCentres = await _dbContext.DistributionCentres
-            .AsNoTracking()
+        var products = await _dbContext.Products
+            .IgnoreQueryFilters()
             .ToListAsync(cancellationToken);
 
-        var products = await _dbContext.Products
-            .ToListAsync(cancellationToken);
+        // Keyed cache: trim+lower SKUCode → Product (includes soft-deleted, prevents duplicate inserts)
+        var productsBySku = products
+            .Where(p => !string.IsNullOrWhiteSpace(p.SKUCode))
+            .GroupBy(p => p.SKUCode.Trim().ToLowerInvariant())
+            .ToDictionary(g => g.Key, g => g.First());
 
         var validRows = new List<ValidatedCsvRow>();
 
@@ -112,51 +116,124 @@ public class OrderService : IOrderService
             {
                 var orderNumber = row.OrderNumber.Trim();
                 var distributionCentreInput = row.DistributionCentre.Trim();
-                var productCodeInput = CleanProductInput(row.ProductCode);
-                var productNameInput = CleanProductInput(row.ProductName);
+                var productCodeInput = CleanProductInput(row.ProductCode ?? string.Empty);
+                var productNameInput = CleanProductInput(row.ProductName ?? string.Empty);
                 var productInput = GetResolvedProductInput(row);
+
+                _logger.LogInformation(
+                    "[CSV ROW START] OrderNumber: {OrderNumber}, SKU: {Sku}, DC: {DistributionCentre}, Quantity: {Quantity}",
+                    orderNumber,
+                    productCodeInput,
+                    distributionCentreInput,
+                    row.Quantity);
 
                 if (string.IsNullOrWhiteSpace(orderNumber))
                 {
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: Order number is required.", orderNumber);
                     AddValidationError(result, row, "Order number is required.", "OrderNumber");
                     continue;
                 }
 
                 if (string.IsNullOrWhiteSpace(distributionCentreInput))
                 {
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: Distribution centre is required.", orderNumber);
                     AddValidationError(result, row, "Distribution centre is required.", "DistributionCentre");
                     continue;
                 }
 
                 if (string.IsNullOrWhiteSpace(productInput))
                 {
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: Product input is empty after SKU mapping.", orderNumber);
                     AddValidationError(result, row, "Product is required.", "Product");
                     continue;
                 }
 
                 if (row.Price <= 0)
                 {
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: Price must be greater than 0.", orderNumber);
                     AddValidationError(result, row, "Price must be greater than 0", "Price");
                     continue;
                 }
 
-                var distributionCentre = ResolveDistributionCentre(distributionCentres, distributionCentreInput);
-                if (distributionCentre is null)
+                _logger.LogInformation("[CSV DC RESOLVE START] {DistributionCentre}", distributionCentreInput);
+                var dcResolution = await _distributionCentreResolver.ResolveFromCsvAsync(distributionCentreInput, cancellationToken);
+                _logger.LogInformation(
+                    "[CSV DC RESOLVE RESULT] Found: {Found}, Id: {Id}",
+                    dcResolution.IsResolved && dcResolution.DistributionCentre is not null,
+                    dcResolution.DistributionCentre?.Id);
+                if (!dcResolution.IsResolved || dcResolution.DistributionCentre is null)
                 {
-                    Console.WriteLine($"Resolving DistributionCentreId failed for '{distributionCentreInput}'.");
-                    LogDistributionCentreMismatch(distributionCentreInput, distributionCentres);
+                    _logger.LogWarning(
+                        "[CSV DC FAILURE] OrderNumber: {OrderNumber}, DistributionCentre: {DistributionCentre}",
+                        orderNumber,
+                        distributionCentreInput);
+                    _logger.LogWarning(
+                        "CSV DC resolution unresolved for row. File={FileName}, Row={RowNumber}, OriginalDc='{OriginalDc}', NormalizedDc='{NormalizedDc}'",
+                        row.FileName,
+                        row.RowNumber,
+                        row.DistributionCentre,
+                        dcResolution.NormalizedInput);
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: Distribution centre could not be resolved.", orderNumber);
                     AddMissingDistributionCentre(result, row.DistributionCentre);
                     pendingRows.Add(CloneRow(row));
                     continue;
                 }
 
-                Console.WriteLine($"Resolving DistributionCentreId for '{distributionCentreInput}' -> {distributionCentre.Id}");
-
-                var product = ResolveProduct(products, productCodeInput, productNameInput, productInput);
-                if (product is null)
+                var distributionCentre = dcResolution.DistributionCentre;
+                if (!distributionCentre.IsActive)
                 {
-                    product = await CreatePlaceholderProductAsync(row, products, cancellationToken);
+                    var restorableDistributionCentre = await _dbContext.DistributionCentres
+                        .IgnoreQueryFilters()
+                        .FirstOrDefaultAsync(x => x.Id == distributionCentre.Id, cancellationToken);
+
+                    if (restorableDistributionCentre is null)
+                    {
+                        throw new InvalidOperationException($"Distribution centre '{distributionCentreInput}' was resolved but could not be loaded for restoration.");
+                    }
+
+                    restorableDistributionCentre.IsActive = true;
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    distributionCentre = restorableDistributionCentre;
+
+                    _logger.LogInformation(
+                        "[CSV DC RESTORED] DistributionCentreId: {DistributionCentreId}, DistributionCentreName: {DistributionCentreName}",
+                        distributionCentre.Id,
+                        distributionCentre.Name);
                 }
+
+                var productSkuRaw = !string.IsNullOrWhiteSpace(row.ProductCode)
+                    ? row.ProductCode
+                    : !string.IsNullOrWhiteSpace(row.Product)
+                        ? row.Product
+                        : !string.IsNullOrWhiteSpace(row.ProductName)
+                            ? row.ProductName
+                            : (row.Metadata.TryGetValue("SKU", out var skuFromMetadata) ? skuFromMetadata : null);
+                var productNameRaw = row.ProductName;
+                var productSku = CleanProductInput(productSkuRaw ?? string.Empty);
+                _logger.LogInformation(
+                    "[CSV SKU MAP] RawCode: '{RawCode}', Product: '{Product}', ProductName: '{ProductName}', ChosenSku: '{Sku}'",
+                    row.ProductCode,
+                    row.Product,
+                    row.ProductName,
+                    productSku);
+
+                if (string.IsNullOrWhiteSpace(productSkuRaw))
+                {
+                    _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: SKU is empty after mapping.", orderNumber);
+                    throw new Exception("[CSV CRITICAL] Product SKU not mapped correctly from CSV");
+                }
+                var productName = string.IsNullOrWhiteSpace(productNameRaw)
+                    ? productSku
+                    : CleanProductInput(productNameRaw);
+
+                _logger.LogInformation("[CSV PRODUCT RESOLVE ENTER] SKU: {Sku}", productSku);
+                var (product, productCreated) = await ResolveOrCreateProductAsync(productSku, productName, productsBySku, cancellationToken);
+
+                _logger.LogInformation(
+                    "[CSV ROW RESULT] OrderNumber: {OrderNumber}, ProductCreated: {ProductCreated}, ProductId: {ProductId}",
+                    orderNumber,
+                    productCreated,
+                    product.Id);
 
                 validRows.Add(new ValidatedCsvRow(
                     row,
@@ -168,8 +245,16 @@ public class OrderService : IOrderService
             }
             catch (Exception exception)
             {
-                AddValidationError(result, row, $"Unexpected processing error: {exception.Message}");
-                _logger.LogWarning(exception, "CSV import failed during row validation for file {FileName} row {RowNumber}", row.FileName, row.RowNumber);
+                var sku = row.ProductCode ?? row.Product ?? row.ProductName;
+                var orderNumber = row.OrderNumber?.Trim() ?? string.Empty;
+                _logger.LogWarning("[CSV EARLY EXIT] OrderNumber: {OrderNumber}, Reason: {Reason}", orderNumber, exception.Message);
+                _logger.LogInformation(
+                    "[CSV ROW RESULT] OrderNumber: {OrderNumber}, ProductCreated: {ProductCreated}, ProductId: {ProductId}",
+                    orderNumber,
+                    false,
+                    (int?)null);
+                _logger.LogError("[CSV ROW FAILURE] SKU: {Sku}, ERROR: {Error}", sku, exception.Message);
+                throw;
             }
         }
 
@@ -239,11 +324,35 @@ public class OrderService : IOrderService
                     ProductId = validRow.Product.Id,
                     ProductCode = ResolveOrderItemProductCode(validRow.Product, validRow.Row),
                     ProductName = ResolveOrderItemProductName(validRow.Product, validRow.Row),
-                    Quantity = validRow.Row.Quantity,
-                    Price = validRow.Row.Price,
+                    Quantity = ResolveCsvQuantity(validRow.Row),
+                    Price = ResolveCsvUnitPrice(validRow.Row),
                     IsUnmapped = !validRow.Product.IsMapped,
-                    Metadata = new Dictionary<string, string>(validRow.Row.Metadata, StringComparer.OrdinalIgnoreCase)
+                    Metadata = BuildCsvItemMetadata(validRow.Row)
                 }).ToList();
+
+                foreach (var item in itemDtos)
+                {
+                    _logger.LogInformation(
+                        "[BACKEND ITEM MAP] SKU: {Sku}, Raw Qty: {RawQty}, Raw Costper: {RawCostper}, Resolved Quantity: {ResolvedQuantity}, Resolved Price: {ResolvedPrice}, Line Total: {LineTotal}",
+                        item.ProductCode ?? string.Empty,
+                        item.Metadata.TryGetValue("CsvRawQty", out var rawQty) ? rawQty : string.Empty,
+                        item.Metadata.TryGetValue("CsvRawCostper", out var rawCostper) ? rawCostper : string.Empty,
+                        item.Quantity,
+                        item.Price,
+                        item.Quantity * item.Price);
+
+                    if (IsQtyCostperSwap(item.Metadata, item.Quantity, item.Price ?? 0m))
+                    {
+                        _logger.LogError(
+                            "[BACKEND SWAP DETECTED] Stage: {Stage}, SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, Quantity: {Quantity}, UnitPrice: {UnitPrice}",
+                            "OrderItemCreateDto",
+                            item.ProductCode ?? string.Empty,
+                            item.Metadata.TryGetValue("CsvRawQty", out var mapRawQty) ? mapRawQty : string.Empty,
+                            item.Metadata.TryGetValue("CsvRawCostper", out var mapRawCostper) ? mapRawCostper : string.Empty,
+                            item.Quantity,
+                            item.Price ?? 0m);
+                    }
+                }
 
                 if (itemDtos.Count == 0)
                 {
@@ -276,7 +385,8 @@ public class OrderService : IOrderService
                 }
 
                 _dbContext.Orders.Add(order);
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                _logger.LogInformation("[CSV] Creating order: {OrderNumber}", orderNumber);
+                await SaveCsvImportChangesAsync(cancellationToken, orderNumber);
                 result.CreatedOrders++;
                 if (order.Status == OrderStatus.Flagged)
                 {
@@ -285,14 +395,12 @@ public class OrderService : IOrderService
             }
             catch (Exception exception)
             {
-                result.SkippedOrders++;
-                foreach (var row in group)
-                {
-                    AddValidationError(result, row.Row, $"Unexpected processing error for order '{orderNumber}': {exception.Message}");
-                }
-
-                _logger.LogWarning(exception, "CSV import failed while creating order {OrderNumber}", orderNumber);
-                _dbContext.ChangeTracker.Clear();
+                var sku = group.FirstOrDefault()?.Row.ProductCode
+                    ?? group.FirstOrDefault()?.Row.Product
+                    ?? group.FirstOrDefault()?.Row.ProductName
+                    ?? string.Empty;
+                _logger.LogError("[CSV ROW FAILURE] SKU: {Sku}, ERROR: {Error}", sku, exception.Message);
+                throw;
             }
         }
 
@@ -315,6 +423,9 @@ public class OrderService : IOrderService
             result.SkippedOrders,
             result.FlaggedOrders,
             result.ValidationErrors.Count);
+
+        var totalProducts = await _dbContext.Products.CountAsync(cancellationToken);
+        _logger.LogError("[CSV FINAL CHECK] Total products in DB: {Count}", totalProducts);
 
         return new CsvImportProcessingResult
         {
@@ -348,24 +459,41 @@ public class OrderService : IOrderService
         }
 
         var existingCentres = await _dbContext.DistributionCentres
-            .AsNoTracking()
+            .IgnoreQueryFilters()
             .ToListAsync(cancellationToken);
-        var existingNames = existingCentres
-            .Select(dc => Normalize(dc.Name))
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .ToHashSet(StringComparer.Ordinal);
 
         var result = new CreateMissingDistributionCentresResultDto
         {
             DistributionCentreId = dto.DistributionCentreId ?? 0
         };
+        var hasChanges = false;
 
         foreach (var centreName in requestedCentres)
         {
             var normalizedCentreName = Normalize(centreName);
-            var exists = !string.IsNullOrWhiteSpace(normalizedCentreName) && existingNames.Contains(normalizedCentreName);
-            if (exists)
+            if (string.IsNullOrWhiteSpace(normalizedCentreName))
             {
+                continue;
+            }
+
+            var matchingCentre = existingCentres
+                .Where(dc => Normalize(dc.Name) == normalizedCentreName || Normalize(dc.Code) == normalizedCentreName)
+                .OrderByDescending(dc => dc.IsActive)
+                .FirstOrDefault();
+
+            if (matchingCentre is not null)
+            {
+                if (!matchingCentre.IsActive)
+                {
+                    matchingCentre.IsActive = true;
+                    hasChanges = true;
+                    _logger.LogInformation(
+                        "[CSV DC RESTORE] Restored inactive distribution centre. Id: {DistributionCentreId}, Name: {DistributionCentreName}, Code: {DistributionCentreCode}",
+                        matchingCentre.Id,
+                        matchingCentre.Name,
+                        matchingCentre.Code);
+                }
+
                 result.ExistingCentres.Add(centreName);
                 continue;
             }
@@ -381,13 +509,22 @@ public class OrderService : IOrderService
             };
 
             _dbContext.DistributionCentres.Add(entity);
-            existingNames.Add(normalizedCentreName!);
+            existingCentres.Add(entity);
             result.CreatedCentres.Add(centreName);
+            hasChanges = true;
         }
 
-        if (result.CreatedCentres.Count > 0)
+        if (hasChanges)
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException exception)
+            {
+                var innerError = exception.InnerException?.Message ?? exception.Message;
+                throw new InvalidOperationException($"Could not create or restore distribution centres due to a uniqueness conflict. Details: {innerError}");
+            }
         }
 
         return result;
@@ -431,83 +568,6 @@ public class OrderService : IOrderService
     private static void AddMissingProduct(CsvUploadResultDto result, CsvOrderRowDto row)
     {
         AddMissingProduct(result, GetResolvedProductInput(row));
-    }
-
-    private DistributionCentre? ResolveDistributionCentre(IEnumerable<DistributionCentre> distributionCentres, string input)
-    {
-        var normalizedInput = Normalize(input);
-
-        if (string.IsNullOrWhiteSpace(normalizedInput))
-            return null;
-
-        var aliasTarget = ResolveDistributionCentreAlias(normalizedInput);
-        if (!string.IsNullOrWhiteSpace(aliasTarget))
-        {
-            _logger.LogInformation(
-                "Applied distribution centre alias. CSV value: [{CsvValue}] Alias target: [{AliasTarget}]",
-                input,
-                aliasTarget);
-
-            var aliasMatch = ResolveDistributionCentreCore(distributionCentres, aliasTarget);
-            if (aliasMatch is not null)
-                return aliasMatch;
-        }
-
-        return ResolveDistributionCentreCore(distributionCentres, input);
-    }
-
-    private static DistributionCentre? ResolveDistributionCentreCore(IEnumerable<DistributionCentre> distributionCentres, string input)
-    {
-        var normalizedInput = Normalize(input);
-
-        if (string.IsNullOrWhiteSpace(normalizedInput))
-            return null;
-
-        var exactMatch = distributionCentres.FirstOrDefault(dc =>
-            Normalize(dc.Name) == normalizedInput ||
-            Normalize(dc.Code) == normalizedInput);
-        if (exactMatch is not null)
-            return exactMatch;
-
-        return distributionCentres.FirstOrDefault(dc =>
-        {
-            var normalizedName = Normalize(dc.Name);
-            var normalizedCode = Normalize(dc.Code);
-            return normalizedName.Contains(normalizedInput, StringComparison.Ordinal)
-                || normalizedCode.Contains(normalizedInput, StringComparison.Ordinal);
-        });
-    }
-
-    private string? ResolveDistributionCentreAlias(string normalizedInput)
-    {
-        if (_csvImportOptions.DistributionCentreAliases.Count == 0)
-            return null;
-
-        foreach (var alias in _csvImportOptions.DistributionCentreAliases)
-        {
-            if (Normalize(alias.Key) == normalizedInput)
-                return alias.Value;
-        }
-
-        return null;
-    }
-
-    private void LogDistributionCentreMismatch(string input, IEnumerable<DistributionCentre> distributionCentres)
-    {
-        var normalizedInput = Normalize(input);
-        var candidates = distributionCentres
-            .Select(dc => $"{dc.Name}/{dc.Code} => {Normalize(dc.Name)}/{Normalize(dc.Code)}")
-            .ToArray();
-        var aliases = _csvImportOptions.DistributionCentreAliases
-            .Select(alias => $"{alias.Key} => {alias.Value}")
-            .ToArray();
-
-        _logger.LogWarning(
-            "CSV distribution centre not matched. CSV value: [{CsvValue}] Normalized: [{NormalizedValue}] Db values: [{Candidates}] Aliases: [{Aliases}]",
-            input,
-            normalizedInput,
-            string.Join(" | ", candidates),
-            string.Join(" | ", aliases));
     }
 
     private static Product? ResolveProduct(IEnumerable<Product> products, string input)
@@ -618,47 +678,212 @@ public class OrderService : IOrderService
         };
     }
 
-    private async Task<Product> CreatePlaceholderProductAsync(CsvOrderRowDto row, List<Product> products, CancellationToken cancellationToken)
+    private static Dictionary<string, string> BuildCsvItemMetadata(CsvOrderRowDto row)
     {
-        var productCode = NormalizeProductCode(row.ProductCode);
-        var productName = CleanProductInput(row.ProductName);
-        var fallbackProduct = GetResolvedProductInput(row);
-        var skuCode = !string.IsNullOrWhiteSpace(productCode) ? productCode : fallbackProduct;
-        var name = !string.IsNullOrWhiteSpace(productName)
-            ? productName
-            : $"UNMAPPED PRODUCT - {skuCode}";
+        var metadata = new Dictionary<string, string>(row.Metadata, StringComparer.OrdinalIgnoreCase);
+        metadata["OriginalDistributionCentre"] = row.DistributionCentre;
+        metadata["CsvRawQty"] = row.Metadata.TryGetValue("QtyRaw", out var qtyRaw)
+            ? qtyRaw
+            : row.Quantity.ToString(CultureInfo.InvariantCulture);
+        metadata["CsvRawCostper"] = row.Metadata.TryGetValue("CostperRaw", out var costperRaw)
+            ? costperRaw
+            : row.Price.ToString(CultureInfo.InvariantCulture);
+        metadata["GrossCstRaw"] = row.Metadata.TryGetValue("GrossCstRaw", out var grossCstRaw)
+            ? grossCstRaw
+            : string.Empty;
+        metadata["ExetendCstRaw"] = row.Metadata.TryGetValue("ExetendCstRaw", out var exetendCstRaw)
+            ? exetendCstRaw
+            : string.Empty;
+        return metadata;
+    }
 
-        var normalizedSkuCode = NormalizeProductCode(skuCode);
-        var existing = ResolveProductBySku(products, normalizedSkuCode)
-            ?? await _dbContext.Products.FirstOrDefaultAsync(
-                product => product.SKUCode != null && product.SKUCode.Trim().ToLower() == normalizedSkuCode,
-                cancellationToken)
-            ?? ResolveProduct(products, productCode, productName, fallbackProduct);
-        if (existing is not null)
+    private static decimal ResolveCsvQuantity(CsvOrderRowDto row)
+    {
+        if (row.Metadata.TryGetValue("QtyRaw", out var rawQty)
+            && TryParseInvariantDecimal(rawQty, out var parsedQty))
         {
-            if (!products.Any(product => product.Id == existing.Id))
-            {
-                products.Add(existing);
-            }
-
-            return existing;
+            return parsedQty;
         }
 
-        var entity = new Product
+        return row.Quantity;
+    }
+
+    private static decimal ResolveCsvUnitPrice(CsvOrderRowDto row)
+    {
+        if (row.Metadata.TryGetValue("CostperRaw", out var rawCostper)
+            && TryParseInvariantDecimal(rawCostper, out var parsedCostper))
         {
-            SKUCode = normalizedSkuCode,
-            Name = name,
+            return parsedCostper;
+        }
+
+        return row.Price;
+    }
+
+    private static bool IsQtyCostperSwap(Dictionary<string, string> metadata, decimal quantity, decimal unitPrice)
+    {
+        if (!TryGetRawValue(metadata, "QtyRaw", "CsvRawQty", out _, out var parsedQty)
+            || !TryGetRawValue(metadata, "CostperRaw", "CsvRawCostper", out _, out var parsedCostper))
+        {
+            return false;
+        }
+
+        return !NearlyEqual(parsedQty, parsedCostper)
+            && NearlyEqual(quantity, parsedCostper)
+            && NearlyEqual(unitPrice, parsedQty);
+    }
+
+    private static bool TryParseInvariantDecimal(string value, out decimal parsed)
+    {
+        parsed = 0;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var compact = value.Trim().Replace(" ", string.Empty).Replace("\u00A0", string.Empty);
+        if (decimal.TryParse(compact, NumberStyles.Number, CultureInfo.InvariantCulture, out parsed))
+        {
+            return true;
+        }
+
+        compact = compact.Replace(',', '.');
+        return decimal.TryParse(compact, NumberStyles.Number, CultureInfo.InvariantCulture, out parsed);
+    }
+
+    private static bool NearlyEqual(decimal left, decimal right)
+    {
+        return Math.Abs(left - right) <= 0.01m;
+    }
+
+    private static bool TryGetRawValue(
+        Dictionary<string, string> metadata,
+        string primaryKey,
+        string fallbackKey,
+        out string rawText,
+        out decimal rawValue)
+    {
+        rawValue = 0m;
+        rawText = string.Empty;
+
+        if (metadata.TryGetValue(primaryKey, out var primary) && !string.IsNullOrWhiteSpace(primary))
+        {
+            rawText = primary;
+        }
+        else if (metadata.TryGetValue(fallbackKey, out var fallback) && !string.IsNullOrWhiteSpace(fallback))
+        {
+            rawText = fallback;
+        }
+
+        return !string.IsNullOrWhiteSpace(rawText)
+            && TryParseInvariantDecimal(rawText, out rawValue);
+    }
+
+    private async Task<(Product Product, bool Created)> ResolveOrCreateProductAsync(string sku, string name, Dictionary<string, Product> productsBySku, CancellationToken cancellationToken = default)
+    {
+        var skuKey = sku?.Trim().ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(skuKey))
+            throw new Exception("[CSV CRITICAL] SKU is empty");
+
+        var skuValue = sku?.Trim() ?? throw new Exception("[CSV CRITICAL] SKU is empty");
+
+        var existsInCache = productsBySku.ContainsKey(skuKey);
+        _logger.LogInformation("[CSV CACHE CHECK] SKU: {SkuKey}, ExistsInCache: {ExistsInCache}", skuKey, existsInCache);
+
+        if (existsInCache)
+        {
+            var cached = productsBySku[skuKey];
+            if (!cached.IsActive)
+            {
+                cached.IsActive = true;
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                _logger.LogInformation("[CSV PRODUCT REACTIVATED] SKU: {Sku}, ProductId: {ProductId}", sku, cached.Id);
+                _logger.LogInformation("[CSV PRODUCT ACTIVE CHECK] SKU: {Sku}, IsActive: {IsActive}", sku, cached.IsActive);
+            }
+
+            productsBySku[skuKey] = cached;
+            return (cached, false);
+        }
+
+        _logger.LogInformation("[CSV DB LOOKUP] SKU: {SkuKey}", skuKey);
+
+        var existing = await _dbContext.Products
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                p => p.SKUCode != null && p.SKUCode.Trim().ToLower() == skuKey,
+                cancellationToken);
+
+        _logger.LogInformation("[CSV DB RESULT] Found: {Found}, ProductId: {ProductId}", existing is not null, existing?.Id);
+
+        if (existing is not null)
+        {
+            if (!existing.IsActive)
+            {
+                existing.IsActive = true;
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                _logger.LogInformation("[CSV PRODUCT REACTIVATED] SKU: {Sku}, ProductId: {ProductId}", sku, existing.Id);
+            }
+
+            _logger.LogInformation("[CSV PRODUCT ACTIVE CHECK] SKU: {Sku}, IsActive: {IsActive}", sku, existing.IsActive);
+            productsBySku[skuKey] = existing;
+            return (existing, false);
+        }
+
+        _logger.LogInformation("[CSV CREATE START] SKU: {Sku}", sku);
+
+        var newProduct = new Product
+        {
+            SKUCode = skuValue,
+            Name = string.IsNullOrWhiteSpace(name) ? skuValue : name.Trim(),
             PalletConversionRate = 1m,
             IsMapped = false,
             RequiresAttention = true,
+            IsActive = true,
             CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified)
         };
 
-        _dbContext.Products.Add(entity);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        products.Add(entity);
+        _dbContext.Products.Add(newProduct);
 
-        return entity;
+        var rows = await _dbContext.SaveChangesAsync(cancellationToken);
+        _logger.LogInformation("[CSV CREATE SAVE RESULT] SKU: {Sku}, Rows: {Rows}", sku, rows);
+        if (rows <= 0)
+            throw new Exception($"[CSV CRITICAL] Save failed for SKU: {sku}");
+
+        var verify = await _dbContext.Products
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                p => p.SKUCode != null && p.SKUCode.Trim().ToLower() == skuKey,
+                cancellationToken);
+
+        if (verify is null)
+            throw new Exception($"[CSV CRITICAL] Product NOT persisted: {sku}");
+
+        _logger.LogInformation("[CSV CREATE VERIFIED] SKU: {Sku}, ProductId: {ProductId}", sku, verify.Id);
+
+        productsBySku[skuKey] = verify;
+
+        if (verify is null)
+            throw new Exception("[CSV CRITICAL] NULL PRODUCT RETURN");
+
+        return (verify, true);
+    }
+
+    private async Task SaveCsvImportChangesAsync(CancellationToken cancellationToken, string context)
+    {
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception)
+        {
+            var innerError = exception.InnerException?.Message ?? exception.Message;
+            _logger.LogError(
+                exception,
+                "[CSV IMPORT ERROR] ProductId missing or FK violation. Context: {Context}. Details: {InnerError}",
+                context,
+                innerError);
+            throw;
+        }
     }
 
     private static string ResolveOrderItemProductCode(Product product, CsvOrderRowDto? row = null)
@@ -815,7 +1040,93 @@ public class OrderService : IOrderService
                 .ThenInclude(x => x.Product)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
 
-        return order is null ? null : MapOrderToDto(order);
+        return order is null ? null : await MapOrderToDtoWithLivePricingAsync(order, cancellationToken);
+    }
+
+    private async Task<OrderDto> MapOrderToDtoWithLivePricingAsync(Order order, CancellationToken cancellationToken)
+    {
+        Console.WriteLine($"Order {order.Id} status: {order.Status}");
+
+        var itemDtos = new List<OrderItemDto>(order.Items.Count);
+
+        foreach (var item in order.Items)
+        {
+            var livePrice = await _pricingService.GetEffectivePriceAsync(item.ProductId, order.DistributionCentreId, null, cancellationToken);
+            var normalizedSystemPrice = livePrice.EffectivePrice.HasValue
+                ? Math.Round(livePrice.EffectivePrice.Value, 2)
+                : (decimal?)null;
+            var normalizedOrderPrice = Math.Round(item.Price, 2);
+            var isPriceMissing = !livePrice.IsFound || !normalizedSystemPrice.HasValue;
+            var isPriceMismatch = !isPriceMissing && normalizedSystemPrice.Value != normalizedOrderPrice;
+
+            var dto = new OrderItemDto
+            {
+                Id = item.Id,
+                ProductId = item.ProductId,
+                ProductName = item.ProductName ?? item.Product?.Name ?? string.Empty,
+                ProductCode = item.ProductCode ?? item.Product?.SKUCode ?? string.Empty,
+                SKUCode = item.ProductCode ?? item.Product?.SKUCode ?? string.Empty,
+                Quantity = item.Quantity,
+                Price = item.Price,
+                Pallets = item.Pallets,
+                LineTotal = item.Quantity * item.Price,
+                IsUnmapped = item.IsUnmapped || item.Product?.IsMapped == false,
+                BasePrice = livePrice.BasePrice,
+                PromoPrice = livePrice.PromoPrice,
+                EffectivePrice = livePrice.EffectivePrice,
+                IsPriceMissing = isPriceMissing,
+                IsPriceMismatch = isPriceMismatch,
+                IsCsvPrice = item.IsCsvPrice
+            };
+
+            _logger.LogInformation(
+                "[BACKEND ITEM DTO] SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, ResolvedQuantity: {ResolvedQuantity}, ResolvedPrice: {ResolvedPrice}, LineTotal: {LineTotal}",
+                dto.SKUCode,
+                item.Metadata.TryGetValue("CsvRawQty", out var rawQty) ? rawQty : string.Empty,
+                item.Metadata.TryGetValue("CsvRawCostper", out var rawCostper) ? rawCostper : string.Empty,
+                dto.Quantity,
+                dto.Price,
+                dto.LineTotal);
+
+            if (IsQtyCostperSwap(item.Metadata, dto.Quantity, dto.Price))
+            {
+                _logger.LogError(
+                    "[BACKEND SWAP DETECTED] Stage: {Stage}, SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, Quantity: {Quantity}, UnitPrice: {UnitPrice}",
+                    "OrderItemDto",
+                    dto.SKUCode,
+                    item.Metadata.TryGetValue("CsvRawQty", out var dtoRawQty) ? dtoRawQty : string.Empty,
+                    item.Metadata.TryGetValue("CsvRawCostper", out var dtoRawCostper) ? dtoRawCostper : string.Empty,
+                    dto.Quantity,
+                    dto.Price);
+            }
+
+            itemDtos.Add(dto);
+        }
+
+        var hasMissing = itemDtos.Any(i => i.IsPriceMissing);
+        var hasMismatch = itemDtos.Any(i => i.IsPriceMismatch);
+        Console.WriteLine($"DTO -> Order {order.Id}: Missing={hasMissing}, Mismatch={hasMismatch}");
+
+        return new OrderDto
+        {
+            Id = order.Id,
+            OrderNumber = order.OrderNumber,
+            OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = order.DeliveryDate.ToString("yyyy-MM-dd"),
+            DistributionCentreId = order.DistributionCentreId,
+            DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
+            Source = order.Source,
+            Status = order.Status,
+            StatusLabel = order.Status.ToString(),
+            Notes = order.Notes,
+            IsPriceMissing = hasMissing,
+            IsPriceMismatch = hasMismatch,
+            IsAdjusted = order.IsAdjusted,
+            IsValidated = OrderStatusHelper.IsOrderValidated(order),
+            TotalValue = order.TotalValue,
+            TotalPallets = order.TotalPallets,
+            Items = itemDtos
+        };
     }
 
     public async Task<Order?> GetByOrderNumberAsync(string orderNumber)
@@ -841,17 +1152,15 @@ public class OrderService : IOrderService
             throw new InvalidOperationException("Cannot process a flagged order. Resolve pricing issues and approve it first.");
         }
 
-        // Enforce workflow: only Approved or Validated statuses can proceed to Processed
-        var effectiveStatus = OrderStatusHelper.GetEffectiveStatus(order);
-        if (effectiveStatus != OrderStatus.Approved)
-        {
-            throw new InvalidOperationException($"Order must be in Approved status to process. Current status: {order.Status} (effective: {effectiveStatus}).");
-        }
-
         // Prevent double-processing
         if (order.Status == OrderStatus.Processed)
         {
             throw new InvalidOperationException("This order has already been processed.");
+        }
+
+        if (order.Status != OrderStatus.Approved)
+        {
+            throw new InvalidOperationException($"Order must be in Approved status to process. Current status: {order.Status}.");
         }
 
         var originalStatus = order.Status;
@@ -869,6 +1178,33 @@ public class OrderService : IOrderService
                 var issueText = $"Planning shortfall for product {item.ProductId}: required {planningCheck.RequiredQuantity}, available {planningCheck.AvailableQuantity}.";
                 order.Notes = AppendNote(order.Notes, issueText);
             }
+        }
+
+        var productIds = order.Items
+            .Select(x => x.ProductId)
+            .Distinct()
+            .ToList();
+
+        var stocksByProductId = await _stockService.GetByProductIdsAsync(productIds, cancellationToken);
+
+        foreach (var item in order.Items)
+        {
+            if (!stocksByProductId.TryGetValue(item.ProductId, out var stock))
+            {
+                throw new InvalidOperationException($"Stock not set for product {item.ProductId}.");
+            }
+
+            if (stock.Quantity < item.Quantity)
+            {
+                throw new InvalidOperationException($"Insufficient stock to process order for product {item.ProductId}. Available: {stock.Quantity}, required: {item.Quantity}.");
+            }
+
+            _logger.LogInformation(
+                "Stock check passed for processing. OrderId={OrderId}, ProductId={ProductId}, CurrentStock={CurrentStock}, RequiredQuantity={RequiredQuantity}. Stock remains unchanged until manual update.",
+                order.Id,
+                item.ProductId,
+                stock.Quantity,
+                item.Quantity);
         }
 
         order.Status = OrderStatus.Processed;
@@ -896,6 +1232,9 @@ public class OrderService : IOrderService
         {
             throw new InvalidOperationException($"Orders can only be approved from Flagged or Validated status. Current status: {order.Status}.");
         }
+
+        var hasPricingIssues = order.Items.Any(i => i.IsPriceMissing || i.IsPriceMismatch);
+        _logger.LogInformation("[APPROVAL CHECK] OrderId: {OrderId}, HasPricingIssues: {HasPricingIssues}, Allowed: true", order.Id, hasPricingIssues);
 
         var originalStatus = order.Status;
         order.Status = OrderStatus.Approved;
@@ -1007,11 +1346,11 @@ public class OrderService : IOrderService
                 throw new InvalidOperationException($"Invalid price for product {adjustment.ProductId}: must be greater than 0.");
             }
 
-            var priceLookup = await _pricingService.GetPriceAsync(line.ProductId, order.DistributionCentreId, cancellationToken);
+            var effectivePrice = await _pricingService.GetEffectivePriceAsync(line.ProductId, order.DistributionCentreId, null, cancellationToken);
             line.Price = resolvedPrice;
-            line.IsPriceMissing = !priceLookup.IsFound || !priceLookup.Price.HasValue;
+            line.IsPriceMissing = !effectivePrice.IsFound || !effectivePrice.EffectivePrice.HasValue;
             line.IsPriceMismatch = !line.IsPriceMissing
-                && Math.Round(priceLookup.Price!.Value, 2) != resolvedPrice;
+                && Math.Round(effectivePrice.EffectivePrice!.Value, 2) != resolvedPrice;
             line.Pallets = await _palletService.CalculatePalletsAsync(line.ProductId, line.Quantity, cancellationToken);
             if (line.IsPriceMissing)
             {
@@ -1094,6 +1433,292 @@ public class OrderService : IOrderService
         return await GetOrderByIdAsync(order.Id, cancellationToken);
     }
 
+    public async Task SoftDeleteOrderAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var order = await _dbContext.Orders
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+        if (order is null)
+        {
+            throw new KeyNotFoundException($"Order not found. OrderId={id}.");
+        }
+
+        if ((int)order.Status >= (int)OrderStatus.Processed)
+        {
+            throw new InvalidOperationException($"Order '{order.OrderNumber}' cannot be deleted because status is '{order.Status}'. Only orders before Processed can be deleted.");
+        }
+
+        order.IsActive = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<OrderItemSwapAuditResponseDto> AuditHistoricalSwappedOrderItemsAsync(
+        bool onlyConfirmed = false,
+        int limit = 500,
+        string? orderNumber = null,
+        string? sku = null,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedOrderNumber = string.IsNullOrWhiteSpace(orderNumber) ? null : orderNumber.Trim();
+        var normalizedSku = string.IsNullOrWhiteSpace(sku) ? null : sku.Trim();
+
+        var query = _dbContext.OrderItems
+            .AsNoTracking()
+            .Include(x => x.Order)
+            .Include(x => x.Product)
+            .Where(x => x.Order != null && x.Order.Source == OrderSource.CSV);
+
+        if (!string.IsNullOrWhiteSpace(normalizedOrderNumber))
+        {
+            query = query.Where(x => x.Order!.OrderNumber == normalizedOrderNumber);
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedSku))
+        {
+            query = query.Where(x =>
+                (x.ProductCode ?? string.Empty) == normalizedSku
+                || (x.Product != null && x.Product.SKUCode == normalizedSku));
+        }
+
+        var rows = await query
+            .OrderBy(x => x.OrderId)
+            .ThenBy(x => x.Id)
+            .Take(Math.Max(1, limit))
+            .ToListAsync(cancellationToken);
+
+        var candidates = new List<OrderItemSwapAuditCandidateDto>();
+        var confirmedCount = 0;
+
+        foreach (var item in rows)
+        {
+            var metadata = item.Metadata;
+            var hasRawQty = TryGetRawValue(metadata, "QtyRaw", "CsvRawQty", out var qtyRawText, out var qtyRaw);
+            var hasRawCostper = TryGetRawValue(metadata, "CostperRaw", "CsvRawCostper", out var costperRawText, out var costperRaw);
+            var hasGrossRaw = TryGetRawValue(metadata, "GrossCstRaw", "GrossCst", out var grossRawText, out var grossRaw);
+            var hasExetendRaw = TryGetRawValue(metadata, "ExetendCstRaw", "ExetendCst", out var exetendRawText, out var exetendRaw);
+
+            var hasSupplierTotal = TryGetRawValue(metadata, "SupplierLineTotal", "SupplierLineTotalRaw", out _, out var supplierTotal)
+                || hasGrossRaw
+                || hasExetendRaw;
+
+            if (!hasSupplierTotal)
+            {
+                supplierTotal = 0m;
+            }
+            else if (!TryGetRawValue(metadata, "SupplierLineTotal", "SupplierLineTotalRaw", out _, out supplierTotal))
+            {
+                supplierTotal = hasGrossRaw ? grossRaw : exetendRaw;
+            }
+
+            var currentLineTotal = item.Quantity * item.Price;
+            var suggestedQty = hasRawQty ? qtyRaw : item.Price;
+            var suggestedPrice = hasRawCostper ? costperRaw : item.Quantity;
+            var suggestedLineTotal = suggestedQty * suggestedPrice;
+            var supplierMatchesSuggested = hasSupplierTotal && NearlyEqual(supplierTotal, suggestedLineTotal);
+            var supplierMatchesCurrent = hasSupplierTotal && NearlyEqual(supplierTotal, currentLineTotal);
+
+            var swapByRaw = hasRawQty
+                && hasRawCostper
+                && !NearlyEqual(qtyRaw, costperRaw)
+                && NearlyEqual(item.Quantity, costperRaw)
+                && NearlyEqual(item.Price, qtyRaw);
+
+            var suspiciousShape = item.IsCsvPrice
+                && item.Quantity > 0
+                && item.Price > 0
+                && item.Quantity <= 25m
+                && item.Price >= 40m
+                && item.Price > (item.Quantity * 1.5m);
+
+            var supplierHeuristicConfirmed = !swapByRaw
+                && hasSupplierTotal
+                && supplierMatchesCurrent
+                && suspiciousShape
+                && item.Price >= 20m
+                && item.Quantity <= 30m;
+
+            var bugSignatureConfirmed = !swapByRaw
+                && hasRawQty
+                && hasRawCostper
+                && NearlyEqual(item.Quantity, qtyRaw)
+                && NearlyEqual(item.Price, costperRaw)
+                && suspiciousShape
+                && (!hasSupplierTotal || !supplierMatchesCurrent);
+
+            var confirmed = (swapByRaw && (!hasSupplierTotal || supplierMatchesSuggested))
+                || supplierHeuristicConfirmed
+                || bugSignatureConfirmed;
+
+            var finalSuggestedQty = bugSignatureConfirmed ? item.Price : suggestedQty;
+            var finalSuggestedPrice = bugSignatureConfirmed ? item.Quantity : suggestedPrice;
+
+            if (!confirmed && !suspiciousShape)
+            {
+                continue;
+            }
+
+            var reason = swapByRaw
+                ? "Raw metadata confirms quantity/unit price are reversed."
+                : confirmed
+                    ? (bugSignatureConfirmed
+                        ? "Historical bug-signature detected: persisted and raw fields share swapped shape while supplier total metadata is absent/inconsistent."
+                        : "Supplier totals and quantity/unit price shape strongly indicate historical quantity/unit price swap.")
+                    : "Suspicious quantity/price shape; raw metadata requires manual review.";
+
+            if (confirmed && hasSupplierTotal && supplierMatchesCurrent && supplierMatchesSuggested)
+            {
+                reason += " Supplier total equals both orientations due to multiplication symmetry.";
+            }
+
+            var candidate = new OrderItemSwapAuditCandidateDto
+            {
+                OrderId = item.OrderId,
+                OrderItemId = item.Id,
+                OrderNumber = item.Order?.OrderNumber ?? string.Empty,
+                SKU = item.ProductCode ?? item.Product?.SKUCode ?? string.Empty,
+                CurrentQuantity = item.Quantity,
+                CurrentUnitPrice = item.Price,
+                CurrentLineTotal = currentLineTotal,
+                QtyRaw = qtyRawText,
+                CostperRaw = costperRawText,
+                GrossCstRaw = grossRawText,
+                ExetendCstRaw = exetendRawText,
+                SuggestedQuantity = finalSuggestedQty,
+                SuggestedUnitPrice = finalSuggestedPrice,
+                DetectionReason = reason,
+                IsConfirmedSwap = confirmed
+            };
+
+            _logger.LogInformation(
+                "[ORDER ITEM AUDIT] OrderNumber: {OrderNumber}, SKU: {Sku}, CurrentQty: {CurrentQty}, CurrentUnitPrice: {CurrentUnitPrice}, CurrentLineTotal: {CurrentLineTotal}, QtyRaw: {QtyRaw}, CostperRaw: {CostperRaw}, SuggestedQty: {SuggestedQty}, SuggestedUnitPrice: {SuggestedUnitPrice}, Confirmed: {Confirmed}, Reason: {Reason}",
+                candidate.OrderNumber,
+                candidate.SKU,
+                candidate.CurrentQuantity,
+                candidate.CurrentUnitPrice,
+                candidate.CurrentLineTotal,
+                candidate.QtyRaw,
+                candidate.CostperRaw,
+                candidate.SuggestedQuantity,
+                candidate.SuggestedUnitPrice,
+                candidate.IsConfirmedSwap,
+                candidate.DetectionReason);
+
+            if (candidate.IsConfirmedSwap)
+            {
+                confirmedCount++;
+                _logger.LogWarning(
+                    "[ORDER ITEM SWAP CONFIRMED] OrderNumber: {OrderNumber}, SKU: {Sku}, CurrentQty: {CurrentQty}, CurrentUnitPrice: {CurrentUnitPrice}, SuggestedQty: {SuggestedQty}, SuggestedUnitPrice: {SuggestedUnitPrice}",
+                    candidate.OrderNumber,
+                    candidate.SKU,
+                    candidate.CurrentQuantity,
+                    candidate.CurrentUnitPrice,
+                    candidate.SuggestedQuantity,
+                    candidate.SuggestedUnitPrice);
+            }
+
+            candidates.Add(candidate);
+        }
+
+        var outputItems = onlyConfirmed
+            ? candidates.Where(x => x.IsConfirmedSwap).ToList()
+            : candidates;
+
+        return new OrderItemSwapAuditResponseDto
+        {
+            TotalScanned = rows.Count,
+            TotalCandidates = candidates.Count,
+            TotalConfirmed = confirmedCount,
+            Items = outputItems
+        };
+    }
+
+    public async Task<OrderItemSwapRepairResponseDto> RepairHistoricalSwappedOrderItemsAsync(
+        bool dryRun = true,
+        int limit = 500,
+        string? orderNumber = null,
+        string? sku = null,
+        CancellationToken cancellationToken = default)
+    {
+        var audit = await AuditHistoricalSwappedOrderItemsAsync(false, limit, orderNumber, sku, cancellationToken);
+        var confirmed = audit.Items.Where(x => x.IsConfirmedSwap).ToList();
+
+        var response = new OrderItemSwapRepairResponseDto
+        {
+            DryRun = dryRun,
+            TotalScanned = audit.TotalScanned,
+            TotalCandidates = audit.TotalCandidates,
+            TotalConfirmed = audit.TotalConfirmed
+        };
+
+        if (confirmed.Count == 0)
+        {
+            return response;
+        }
+
+        if (dryRun)
+        {
+            foreach (var item in confirmed)
+            {
+                _logger.LogInformation(
+                    "[ORDER ITEM REPAIR SKIPPED] DryRun: true, OrderNumber: {OrderNumber}, SKU: {Sku}, CurrentQty: {CurrentQty}, CurrentUnitPrice: {CurrentUnitPrice}, SuggestedQty: {SuggestedQty}, SuggestedUnitPrice: {SuggestedUnitPrice}",
+                    item.OrderNumber,
+                    item.SKU,
+                    item.CurrentQuantity,
+                    item.CurrentUnitPrice,
+                    item.SuggestedQuantity,
+                    item.SuggestedUnitPrice);
+                response.SkippedItems.Add(item);
+            }
+
+            response.SkippedCount = response.SkippedItems.Count;
+            return response;
+        }
+
+        await using var tx = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var itemIds = confirmed.Select(x => x.OrderItemId).ToHashSet();
+            var dbItems = await _dbContext.OrderItems
+                .Include(x => x.Order)
+                .Include(x => x.Product)
+                .Where(x => itemIds.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+
+            foreach (var dbItem in dbItems)
+            {
+                var confirmedCandidate = confirmed.First(x => x.OrderItemId == dbItem.Id);
+                var beforeQty = dbItem.Quantity;
+                var beforePrice = dbItem.Price;
+
+                dbItem.Quantity = confirmedCandidate.SuggestedQuantity;
+                dbItem.Price = confirmedCandidate.SuggestedUnitPrice;
+
+                _logger.LogWarning(
+                    "[ORDER ITEM REPAIR] OrderNumber: {OrderNumber}, SKU: {Sku}, OldQty: {OldQty}, OldUnitPrice: {OldUnitPrice}, NewQty: {NewQty}, NewUnitPrice: {NewUnitPrice}, NewLineTotal: {NewLineTotal}",
+                    dbItem.Order?.OrderNumber ?? string.Empty,
+                    dbItem.ProductCode ?? dbItem.Product?.SKUCode ?? string.Empty,
+                    beforeQty,
+                    beforePrice,
+                    dbItem.Quantity,
+                    dbItem.Price,
+                    dbItem.Quantity * dbItem.Price);
+
+                response.RepairedItems.Add(confirmedCandidate);
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+            response.RepairedCount = response.RepairedItems.Count;
+        }
+        catch
+        {
+            await tx.RollbackAsync(cancellationToken);
+            throw;
+        }
+
+        return response;
+    }
+
     private async Task<(decimal Total, decimal TotalPallets, bool HasPricingIssues, List<string> Warnings)> BuildOrderItemsAsync(
         Order order,
         List<OrderItemCreateDto> items,
@@ -1113,6 +1738,7 @@ public class OrderService : IOrderService
 
         var products = await _dbContext.Products
             .AsNoTracking()
+            .IgnoreQueryFilters()
             .Where(x => requestedProductIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, cancellationToken);
 
@@ -1128,7 +1754,7 @@ public class OrderService : IOrderService
             bool isPriceMissing;
             bool isMismatch;
             bool isCsvPrice;
-            PriceLookupResult? priceLookup = null;
+            EffectivePriceResult? priceLookup = null;
 
             if (useProvidedPrices)
             {
@@ -1143,9 +1769,9 @@ public class OrderService : IOrderService
                 }
 
                 poPrice = item.Price.Value;
-                priceLookup = await _pricingService.GetPriceAsync(item.ProductId, distributionCentre.Id, cancellationToken);
-                isPriceMissing = !priceLookup.IsFound || !priceLookup.Price.HasValue;
-                expectedPrice = priceLookup.Price;
+                priceLookup = await _pricingService.GetEffectivePriceAsync(item.ProductId, distributionCentre.Id, null, cancellationToken);
+                isPriceMissing = !priceLookup.IsFound || !priceLookup.EffectivePrice.HasValue;
+                expectedPrice = priceLookup.EffectivePrice;
                 isMismatch = expectedPrice.HasValue
                     && Math.Round(poPrice, 2) != Math.Round(expectedPrice.Value, 2);
                 isCsvPrice = true;
@@ -1163,9 +1789,9 @@ public class OrderService : IOrderService
                 }
 
                 poPrice = item.Price.Value;
-                priceLookup = await _pricingService.GetPriceAsync(item.ProductId, distributionCentre.Id, cancellationToken);
-                isPriceMissing = !priceLookup.IsFound || !priceLookup.Price.HasValue;
-                expectedPrice = priceLookup.Price;
+                priceLookup = await _pricingService.GetEffectivePriceAsync(item.ProductId, distributionCentre.Id, null, cancellationToken);
+                isPriceMissing = !priceLookup.IsFound || !priceLookup.EffectivePrice.HasValue;
+                expectedPrice = priceLookup.EffectivePrice;
                 isMismatch = expectedPrice.HasValue
                     && Math.Round(poPrice, 2) != Math.Round(expectedPrice.Value, 2);
                 isCsvPrice = false;
@@ -1174,11 +1800,12 @@ public class OrderService : IOrderService
             if (isPriceMissing)
             {
                 missingPricingProducts.Add(product.Id);
+                _logger.LogInformation("[CSV] Using CSV price for: {SkuCode} (Needs Pricing)", product.SKUCode);
             }
 
             var pallets = await _palletService.CalculatePalletsAsync(item.ProductId, item.Quantity, cancellationToken);
 
-            order.Items.Add(new OrderItem
+            var createdEntity = new OrderItem
             {
                 ProductId = item.ProductId,
                 ProductCode = item.IsUnmapped
@@ -1195,7 +1822,29 @@ public class OrderService : IOrderService
                 IsPriceMismatch = isMismatch,
                 IsCsvPrice = isCsvPrice,
                 Metadata = new Dictionary<string, string>(item.Metadata, StringComparer.OrdinalIgnoreCase)
-            });
+            };
+
+            order.Items.Add(createdEntity);
+            _logger.LogInformation(
+                "[BACKEND ITEM ENTITY] SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, ResolvedQuantity: {ResolvedQuantity}, ResolvedPrice: {ResolvedPrice}, LineTotal: {LineTotal}",
+                createdEntity.ProductCode ?? product.SKUCode ?? string.Empty,
+                createdEntity.Metadata.TryGetValue("CsvRawQty", out var rawQty) ? rawQty : string.Empty,
+                createdEntity.Metadata.TryGetValue("CsvRawCostper", out var rawCostper) ? rawCostper : string.Empty,
+                createdEntity.Quantity,
+                createdEntity.Price,
+                createdEntity.Quantity * createdEntity.Price);
+
+            if (IsQtyCostperSwap(createdEntity.Metadata, createdEntity.Quantity, createdEntity.Price))
+            {
+                _logger.LogError(
+                    "[BACKEND SWAP DETECTED] Stage: {Stage}, SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, Quantity: {Quantity}, UnitPrice: {UnitPrice}",
+                    "OrderItemEntity",
+                    createdEntity.ProductCode ?? product.SKUCode ?? string.Empty,
+                    createdEntity.Metadata.TryGetValue("CsvRawQty", out var entityRawQty) ? entityRawQty : string.Empty,
+                    createdEntity.Metadata.TryGetValue("CsvRawCostper", out var entityRawCostper) ? entityRawCostper : string.Empty,
+                    createdEntity.Quantity,
+                    createdEntity.Price);
+            }
 
             total += item.Quantity * poPrice;
             totalPallets += pallets;
@@ -1322,7 +1971,7 @@ public class OrderService : IOrderService
 
     private static DateTime ToDbDate(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
 
-    private static OrderDto MapOrderToDto(Order order)
+    private OrderDto MapOrderToDto(Order order)
     {
         Console.WriteLine($"Order {order.Id} status: {order.Status}");
 
@@ -1348,21 +1997,47 @@ public class OrderService : IOrderService
             IsValidated = OrderStatusHelper.IsOrderValidated(order),
             TotalValue = order.TotalValue,
             TotalPallets = order.TotalPallets,
-            Items = order.Items.Select(x => new OrderItemDto
+            Items = order.Items.Select(x =>
             {
-                Id = x.Id,
-                ProductId = x.ProductId,
-                ProductName = x.ProductName ?? x.Product?.Name ?? string.Empty,
-                ProductCode = x.ProductCode ?? x.Product?.SKUCode ?? string.Empty,
-                SKUCode = x.ProductCode ?? x.Product?.SKUCode ?? string.Empty,
-                Quantity = x.Quantity,
-                Price = x.Price,
-                Pallets = x.Pallets,
-                LineTotal = x.Quantity * x.Price,
-                IsUnmapped = x.IsUnmapped || x.Product?.IsMapped == false,
-                IsPriceMissing = x.IsPriceMissing,
-                IsPriceMismatch = x.IsPriceMismatch,
-                IsCsvPrice = x.IsCsvPrice
+                var dto = new OrderItemDto
+                {
+                    Id = x.Id,
+                    ProductId = x.ProductId,
+                    ProductName = x.ProductName ?? x.Product?.Name ?? string.Empty,
+                    ProductCode = x.ProductCode ?? x.Product?.SKUCode ?? string.Empty,
+                    SKUCode = x.ProductCode ?? x.Product?.SKUCode ?? string.Empty,
+                    Quantity = x.Quantity,
+                    Price = x.Price,
+                    Pallets = x.Pallets,
+                    LineTotal = x.Quantity * x.Price,
+                    IsUnmapped = x.IsUnmapped || x.Product?.IsMapped == false,
+                    IsPriceMissing = x.IsPriceMissing,
+                    IsPriceMismatch = x.IsPriceMismatch,
+                    IsCsvPrice = x.IsCsvPrice
+                };
+
+                _logger.LogInformation(
+                    "[BACKEND ITEM DTO] SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, ResolvedQuantity: {ResolvedQuantity}, ResolvedPrice: {ResolvedPrice}, LineTotal: {LineTotal}",
+                    dto.SKUCode,
+                    x.Metadata.TryGetValue("CsvRawQty", out var rawQty) ? rawQty : string.Empty,
+                    x.Metadata.TryGetValue("CsvRawCostper", out var rawCostper) ? rawCostper : string.Empty,
+                    dto.Quantity,
+                    dto.Price,
+                    dto.LineTotal);
+
+                if (IsQtyCostperSwap(x.Metadata, dto.Quantity, dto.Price))
+                {
+                    _logger.LogError(
+                        "[BACKEND SWAP DETECTED] Stage: {Stage}, SKU: {Sku}, RawQty: {RawQty}, RawCostper: {RawCostper}, Quantity: {Quantity}, UnitPrice: {UnitPrice}",
+                        "OrderItemDto",
+                        dto.SKUCode,
+                        x.Metadata.TryGetValue("CsvRawQty", out var dtoRawQty) ? dtoRawQty : string.Empty,
+                        x.Metadata.TryGetValue("CsvRawCostper", out var dtoRawCostper) ? dtoRawCostper : string.Empty,
+                        dto.Quantity,
+                        dto.Price);
+                }
+
+                return dto;
             }).ToList()
         };
     }

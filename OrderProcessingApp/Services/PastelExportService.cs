@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.Data;
 using OrderProcessingApp.Models;
@@ -32,7 +33,7 @@ public class PastelExportService : IPastelExportService
             .ToListAsync(cancellationToken);
 
         var sb = new StringBuilder();
-        sb.AppendLine("Customer,ProductSKU,Quantity,Price");
+        sb.AppendLine("Customer|ProductSKU|Quantity|Price");
 
         foreach (var order in orders)
         {
@@ -40,9 +41,18 @@ public class PastelExportService : IPastelExportService
             {
                 var customer = EscapeCsv(order.DistributionCentre?.Name ?? string.Empty);
                 var sku = EscapeCsv(item.Product?.SKUCode ?? string.Empty);
-                sb.AppendLine($"{customer},{sku},{item.Quantity:0.##},{item.Price:0.00}");
+                sb.AppendLine(string.Join("|", new[]
+                {
+                    customer,
+                    sku,
+                    FormatDecimal(item.Quantity, "0.##"),
+                    FormatDecimal(item.Price, "0.00")
+                }));
             }
         }
+
+        var rowCount = orders.Sum(o => o.Items.Count);
+        Console.WriteLine($"[EXPORT] Generated report, rows: {rowCount}");
 
         return new ExportFileResult
         {
@@ -66,11 +76,16 @@ public class PastelExportService : IPastelExportService
 
     private static string EscapeCsv(string value)
     {
-        if (value.Contains(',') || value.Contains('"'))
+        if (value.Contains('|') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
         {
             return $"\"{value.Replace("\"", "\"\"")}\"";
         }
 
         return value;
+    }
+
+    private static string FormatDecimal(decimal value, string format)
+    {
+        return value.ToString(format, CultureInfo.InvariantCulture).Replace('.', ',');
     }
 }

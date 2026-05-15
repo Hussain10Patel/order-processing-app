@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.Data;
 using OrderProcessingApp.DTOs;
+using OrderProcessingApp.Services;
 
 namespace OrderProcessingApp.Controllers;
 
@@ -10,10 +11,12 @@ namespace OrderProcessingApp.Controllers;
 public class ProductsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly IProductService _productService;
 
-    public ProductsController(AppDbContext dbContext)
+    public ProductsController(AppDbContext dbContext, IProductService productService)
     {
         _dbContext = dbContext;
+        _productService = productService;
     }
 
     [HttpGet]
@@ -57,5 +60,17 @@ public class ProductsController : ControllerBase
         }
 
         return Ok(product);
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id, CancellationToken cancellationToken)
+    {
+        var deleted = await _productService.SoftDeleteProductAsync(id, cancellationToken);
+        if (!deleted)
+        {
+            return NotFound(new { message = $"Product not found. ProductId={id}." });
+        }
+
+        return NoContent();
     }
 }

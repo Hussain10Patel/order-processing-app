@@ -15,7 +15,10 @@ public class AppDbContext : DbContext
     public DbSet<DistributionCentre> DistributionCentres => Set<DistributionCentre>();
     public DbSet<Region> Regions => Set<Region>();
     public DbSet<PriceList> PriceLists => Set<PriceList>();
+    public DbSet<PricePromotion> PricePromotions => Set<PricePromotion>();
     public DbSet<ProductionPlan> ProductionPlans => Set<ProductionPlan>();
+    public DbSet<ProductionDecision> ProductionDecisions => Set<ProductionDecision>();
+    public DbSet<Stock> Stocks => Set<Stock>();
     public DbSet<DeliverySchedule> DeliverySchedules => Set<DeliverySchedule>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<PendingCsvImportSession> PendingCsvImportSessions => Set<PendingCsvImportSession>();
@@ -39,8 +42,10 @@ public class AppDbContext : DbContext
             entity.Property(x => x.OrderNumber).HasMaxLength(50).IsRequired();
             entity.Property(x => x.Notes).HasMaxLength(1000);
             entity.Property(x => x.IsAdjusted).HasDefaultValue(false);
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.TotalValue).HasPrecision(18, 2);
             entity.Property(x => x.TotalPallets).HasPrecision(18, 2);
+            entity.HasQueryFilter(x => x.IsActive);
 
             entity.HasOne(x => x.DistributionCentre)
                 .WithMany(x => x.Orders)
@@ -83,7 +88,9 @@ public class AppDbContext : DbContext
             entity.Property(x => x.PalletConversionRate).HasPrecision(18, 4);
             entity.Property(x => x.IsMapped).HasDefaultValue(true);
             entity.Property(x => x.RequiresAttention).HasDefaultValue(false);
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasQueryFilter(x => x.IsActive);
         });
 
         modelBuilder.Entity<DistributionCentre>(entity =>
@@ -94,6 +101,8 @@ public class AppDbContext : DbContext
             entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
             entity.Property(x => x.Code).HasMaxLength(120).IsRequired();
             entity.Property(x => x.RequiresAttention).HasDefaultValue(false);
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
+            entity.HasQueryFilter(x => x.IsActive);
 
             entity.HasOne(x => x.Region)
                 .WithMany(x => x.DistributionCentres)
@@ -113,6 +122,8 @@ public class AppDbContext : DbContext
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.ProductId, x.DistributionCentreId }).IsUnique();
             entity.Property(x => x.Price).HasPrecision(18, 2);
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
+            entity.HasQueryFilter(x => x.IsActive);
 
             entity.HasOne(x => x.Product)
                 .WithMany(x => x.PriceLists)
@@ -121,6 +132,30 @@ public class AppDbContext : DbContext
 
             entity.HasOne(x => x.DistributionCentre)
                 .WithMany(x => x.PriceLists)
+                .HasForeignKey(x => x.DistributionCentreId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PricePromotion>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.ProductId, x.DistributionCentreId, x.StartDate, x.EndDate })
+                .IsUnique()
+                .HasDatabaseName("IX_PricePromotions_ProductId_DistributionCentreId_StartDate_EndDate");
+            entity.Property(x => x.PromoPrice).HasPrecision(18, 2);
+            entity.Property(x => x.StartDate).IsRequired();
+            entity.Property(x => x.EndDate).IsRequired();
+            entity.Property(x => x.IsActive).HasDefaultValue(true);
+            entity.Property(x => x.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasQueryFilter(x => x.IsActive);
+
+            entity.HasOne(x => x.Product)
+                .WithMany()
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.DistributionCentre)
+                .WithMany()
                 .HasForeignKey(x => x.DistributionCentreId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
@@ -140,9 +175,40 @@ public class AppDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<ProductionDecision>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.OrderItemId).IsUnique();
+            entity.Property(x => x.RequiredStock).HasPrecision(18, 2);
+            entity.Property(x => x.CurrentStock).HasPrecision(18, 2);
+            entity.Property(x => x.Difference).HasPrecision(18, 2);
+            entity.Property(x => x.RequiredProductionQty).HasPrecision(18, 2);
+            entity.Property(x => x.RemainingStock).HasPrecision(18, 2);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+
+            entity.HasOne(x => x.OrderItem)
+                .WithMany(x => x.ProductionDecisions)
+                .HasForeignKey(x => x.OrderItemId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+            modelBuilder.Entity<Stock>(entity =>
+            {
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => x.ProductId).IsUnique();
+                entity.Property(x => x.Quantity).HasPrecision(18, 2);
+                entity.Property(x => x.LastUpdated).IsRequired();
+
+                entity.HasOne(x => x.Product)
+                .WithMany()
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Cascade);
+            });
+
         modelBuilder.Entity<DeliverySchedule>(entity =>
         {
             entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.OrderId).IsUnique();
             entity.Property(x => x.Status).HasMaxLength(50).IsRequired();
             entity.Property(x => x.Notes).HasMaxLength(1000);
 
