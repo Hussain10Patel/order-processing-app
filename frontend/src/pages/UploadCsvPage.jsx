@@ -178,6 +178,30 @@ function hasActionRequired(result) {
   );
 }
 
+function extractRetryErrorMessage(requestError) {
+  const payload = requestError?.payload;
+
+  if (typeof payload === "object" && payload) {
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+
+    if (typeof payload.error === "string" && payload.error.trim()) {
+      return payload.error.trim();
+    }
+
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail.trim();
+    }
+  }
+
+  if (typeof requestError?.message === "string" && requestError.message.trim()) {
+    return requestError.message.trim();
+  }
+
+  return "Failed to retry CSV import";
+}
+
 function UploadCsvPage() {
   const [files, setFiles] = useState([]);
   const [allowDuplicates, setAllowDuplicates] = useState(false);
@@ -212,6 +236,11 @@ function UploadCsvPage() {
     setShowPricingWarningDetails(false);
 
     try {
+      files.forEach((file) => {
+        console.log("[UPLOAD FILE]", file?.name ?? "");
+      });
+      console.log("[UPLOAD REQUEST] Sending CSV to backend");
+
       const response = await uploadCsv(files, {
         allowDuplicates,
         onProgress: (value, fileName) => {
@@ -219,11 +248,37 @@ function UploadCsvPage() {
           setCurrentFile(fileName);
         },
       });
+      console.log("[UPLOAD RESPONSE RAW]", response);
+      console.log("[UPLOAD FULL RESPONSE]", JSON.stringify(response, null, 2));
+      console.log("[UPLOAD SUMMARY]", {
+        created: response?.created,
+        skipped: response?.skipped,
+        errors: response?.errors,
+      });
+
+      const responseProducts = Array.isArray(response?.products)
+        ? response.products
+        : Array.isArray(response?.createdProducts)
+          ? response.createdProducts
+          : null;
+      if (responseProducts) {
+        console.log("[UPLOAD PRODUCTS CREATED] Count:", responseProducts.length);
+      }
+
+      console.log("[UPLOAD ERRORS]", response?.errors);
+      console.log("[UPLOAD SKIPPED]", response?.skipped ?? response?.skippedOrders ?? 0);
+
       setResult(response);
 
       if (hasActionRequired(response)) {
         setShowActionRequiredModal(true);
         setMessage(response.message || "Resolve the missing references to continue the import.");
+        console.log(
+          "[UPLOAD SUMMARY DISPLAYED] Created:",
+          response?.createdOrders ?? 0,
+          ", Skipped:",
+          response?.skipped ?? response?.skippedOrders ?? 0
+        );
         return;
       }
 
@@ -232,6 +287,12 @@ function UploadCsvPage() {
         (response?.createdOrders ?? 0) > 0
           ? getUploadSummary(response)
           : "No valid rows processed. Please check errors below."
+      );
+      console.log(
+        "[UPLOAD SUMMARY DISPLAYED] Created:",
+        response?.createdOrders ?? 0,
+        ", Skipped:",
+        response?.skipped ?? response?.skippedOrders ?? 0
       );
     } catch (uploadError) {
       setError(uploadError.message || "Upload failed");
@@ -280,7 +341,7 @@ function UploadCsvPage() {
           : response.message || "No valid rows processed. Please check errors below."
       );
     } catch (requestError) {
-      setError(requestError.message || "Failed to retry CSV import");
+      setError(extractRetryErrorMessage(requestError));
     } finally {
       setResolvingAction(false);
       setLoading(false);
@@ -544,7 +605,7 @@ function UploadCsvPage() {
         <div className="modal-overlay" role="presentation">
           <div className="modal-card action-required-card" role="dialog" aria-modal="true" aria-labelledby="action-required-title">
             <h3 id="action-required-title">Action Required</h3>
-            <p>Some rows reference products or distribution centres that do not exist yet. Create the missing records and continue the import.</p>
+            <p>Some rows reference products or distribution centres that may be missing or inactive. Create missing records and continue the import.</p>
 
             <div className="modal-section-grid">
               {result?.missingProducts?.length > 0 && (

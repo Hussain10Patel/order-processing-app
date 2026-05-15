@@ -1,8 +1,10 @@
+import axios from "axios";
 import { formatDate, parseUtcDate } from "../utils/date.js";
 export { formatDate, parseUtcDate };
 
 //const API_BASE = "https://order-processing-app-3.onrender.com";
-const API_BASE = "https://order-processing-app-3.onrender.com";
+//const API_BASE = "https://order-processing-app-3.onrender.com";
+const API_BASE = "http://localhost:8080";
  
 
 function getToday() {
@@ -36,6 +38,45 @@ function toQueryString(params) {
   return query ? `?${query}` : "";
 }
 
+function extractApiErrorMessage(payload, status) {
+  if (typeof payload === "object" && payload) {
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+
+    if (typeof payload.error === "string" && payload.error.trim()) {
+      return payload.error.trim();
+    }
+
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      return payload.detail.trim();
+    }
+
+    if (typeof payload.title === "string" && payload.title.trim()) {
+      return payload.title.trim();
+    }
+
+    if (payload.errors && typeof payload.errors === "object") {
+      const firstEntry = Object.values(payload.errors).find(
+        (value) => Array.isArray(value) && value.length > 0
+      );
+      if (firstEntry && typeof firstEntry[0] === "string" && firstEntry[0].trim()) {
+        return firstEntry[0].trim();
+      }
+    }
+  }
+
+  if (typeof payload === "string" && payload.trim()) {
+    return payload.trim();
+  }
+
+  if (status >= 500) {
+    return "Server error. Please try again.";
+  }
+
+  return `Request failed (${status})`;
+}
+
 async function handleResponse(response) {
   const contentType = response.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");
@@ -49,12 +90,7 @@ async function handleResponse(response) {
   }
 
   if (!response.ok) {
-    const message =
-      typeof payload === "object" && payload?.message
-        ? payload.message
-        : response.status >= 500
-          ? "Server error. Please try again."
-          : `Request failed (${response.status})`;
+    const message = extractApiErrorMessage(payload, response.status);
 
     console.error("API request failed:", {
       status: response.status,
@@ -110,8 +146,12 @@ export async function getOrders(filters = {}) {
   return request(`/api/orders${toQueryString(filters)}`, { method: "GET" });
 }
 
-export async function getUnscheduledOrders({ date } = {}) {
-  return request(`/api/orders${toQueryString({ deliveryDate: date })}`, { method: "GET" });
+export async function getOrderById(id) {
+  return request(`/api/orders/${id}`, { method: "GET" });
+}
+
+export async function getUnscheduledOrders({ date, status } = {}) {
+  return request(`/api/orders${toQueryString({ deliveryDate: date, status })}`, { method: "GET" });
 }
 
 export async function createManualOrder(orderData) {
@@ -161,6 +201,17 @@ export async function updateOrderStatus(id, status) {
 
 export async function getProducts() {
   return request("/api/admin/products", { method: "GET" });
+}
+
+export async function getStock() {
+  return request("/api/stock", { method: "GET" });
+}
+
+export async function updateStock(payload) {
+  return request("/api/stock/update", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getDistributionCentres() {
@@ -286,15 +337,38 @@ export async function retryCsvImport(fileId, options = {}) {
   return response;
 }
 
-export async function getProduction(date = getToday()) {
-  const formattedDate = String(date);
-  console.log("[API CALL] Date sent:", formattedDate);
-  console.log("[API CALL] YYYY-MM-DD:", /^\d{4}-\d{2}-\d{2}$/.test(formattedDate));
-  return request(`/api/production${toQueryString({ date })}`, { method: "GET" });
+export async function getProduction(options = {}) {
+  const normalizedOptions =
+    typeof options === "string" || options instanceof Date ? { date: options } : options;
+
+  const dateValue = normalizedOptions?.date;
+  const query = dateValue ? toQueryString({ date: String(dateValue) }) : "";
+  return request(`/api/production${query}`, { method: "GET" });
 }
 
-export async function getDeliveries(date = getToday()) {
-  return request(`/api/delivery${toQueryString(normalizeDateFilter(date))}`, { method: "GET" });
+export async function saveProductionDecision(payload) {
+  return request("/api/production/decision", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDeliveries(date) {
+  const query = date === undefined || date === null || date === ""
+    ? ""
+    : toQueryString(normalizeDateFilter(date));
+
+  return request(`/api/delivery${query}`, { method: "GET" });
+}
+
+export async function getUnscheduledDeliveries(date) {
+  const query = date === undefined || date === null || date === ""
+    ? ""
+    : toQueryString(normalizeDateFilter(date));
+
+  return request(`/api/delivery/unscheduled${query}`, {
+    method: "GET",
+  });
 }
 
 export async function getSupplierDeliverySummary(date = getToday()) {
@@ -317,8 +391,12 @@ export async function getSalesReport() {
   return request("/api/reports/sales", { method: "GET" });
 }
 
+export async function getReportDates() {
+  return request("/api/reports/available-dates", { method: "GET" });
+}
+
 export async function getReportSummary(date = getToday()) {
-  return request(`/api/reports/summary${toQueryString({ date })}`, { method: "GET" });
+  return request(`/api/reports/summary-data${toQueryString({ date })}`, { method: "GET" });
 }
 
 function getDownloadFileName(contentDisposition, fallback) {
@@ -339,58 +417,46 @@ function getDownloadFileName(contentDisposition, fallback) {
   return fallback;
 }
 
-export async function downloadReportExport(type, date = getToday()) {
-  const response = await fetch(`${API_BASE}/api/reports/export/${type}${toQueryString({ date })}`);
+const EXPORT_ENDPOINT_MAP = {
+  orders: "orders",
+  delivery: "delivery",
+  pastel: "pastel",
+};
 
-  if (!response.ok) {
-    await handleResponse(response);
+async function downloadDetailedExport(type, date = getToday()) {
+  console.log("[EXPORT CLICK]", type);
+
+  const endpoint = EXPORT_ENDPOINT_MAP[type];
+  if (!endpoint) {
+    throw new Error(`Invalid export type: ${type}`);
   }
 
-  const csvText = await response.text();
-  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
-  const contentDisposition = response.headers.get("Content-Disposition");
-  const fileName = getDownloadFileName(contentDisposition, `${type}-${date}.csv`);
+  const url = `${API_BASE}/api/export/${endpoint}${toQueryString({ date })}`;
+  console.log("[EXPORT URL]", url);
 
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.URL.revokeObjectURL(url);
+  const response = await axios.get(url, { responseType: "blob" });
+  console.log("[EXPORT STATUS]", response.status);
+
+  const blob = new Blob([response.data], { type: "text/csv" });
+  let filename = `${type}-${date}.csv`;
+
+  const disposition = response.headers["content-disposition"];
+  filename = getDownloadFileName(disposition, filename);
+
+  const link = document.createElement("a");
+  link.href = window.URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+export async function downloadReportExport(type, date = getToday()) {
+  return downloadDetailedExport(type, date);
 }
 
 export async function downloadExport(type, date = getToday()) {
-  const response = await fetch(`${API_BASE}/api/export/${type}${toQueryString({ date })}`);
-
-  if (!response.ok) {
-    await handleResponse(response);
-  }
-
-  const blob = await response.blob();
-  const contentDisposition = response.headers.get("Content-Disposition");
-  let fileName = "download.csv";
-
-  if (contentDisposition && contentDisposition.includes("filename=")) {
-    fileName = contentDisposition
-      .split("filename=")[1]
-      .replace(/"/g, "")
-      .trim();
-  }
-
-  if (!fileName) {
-    fileName = "download.csv";
-  }
-
-  const url = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.URL.revokeObjectURL(url);
+  return downloadDetailedExport(type, date);
 }
 
 export async function scheduleDelivery(payload) {
@@ -414,6 +480,12 @@ export async function updateProduct(id, payload) {
   });
 }
 
+export async function deleteProduct(id) {
+  return request(`/api/admin/products/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getPriceLists() {
   return request("/api/admin/pricelists", { method: "GET" });
 }
@@ -425,11 +497,73 @@ export async function upsertPriceList(payload) {
   });
 }
 
+export async function getPricePromotions() {
+  return request("/api/admin/price-promotions");
+}
+
+export async function upsertPricePromotion(payload) {
+  return request("/api/admin/price-promotions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePricePromotion(id, payload) {
+  return request(`/api/admin/price-promotions/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deletePricePromotion(id) {
+  return request(`/api/admin/price-promotions/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function deletePriceList(id) {
+  console.log("[DELETE REQUEST]", "pricelists", id);
+
+  try {
+    const response = await request(`/api/pricelists/${id}`, {
+      method: "DELETE",
+    });
+
+    console.log("[DELETE RESPONSE]", "success", "pricelists", id);
+    return response;
+  } catch (error) {
+    console.log("[DELETE RESPONSE]", "error", "pricelists", id, error?.message);
+    throw error;
+  }
+}
+
 export async function createDistributionCentre(payload) {
   console.log("🌐 API FUNCTION CALLED with:", payload);
   return request("/api/admin/distributioncentres", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDistributionCentre(id) {
+  console.log("[DELETE REQUEST]", "distributioncentres", id);
+
+  try {
+    const response = await request(`/api/distributioncentres/${id}`, {
+      method: "DELETE",
+    });
+
+    console.log("[DELETE RESPONSE]", "success", "distributioncentres", id);
+    return response;
+  } catch (error) {
+    console.log("[DELETE RESPONSE]", "error", "distributioncentres", id, error?.message);
+    throw error;
+  }
+}
+
+export async function deleteOrder(id) {
+  return request(`/api/orders/${id}`, {
+    method: "DELETE",
   });
 }
 
@@ -441,6 +575,7 @@ export async function resetTestData() {
 
 export const api = {
   getOrders,
+  getOrderById,
   createManualOrder,
   getSystemPrice,
   adjustOrder,
@@ -454,19 +589,29 @@ export const api = {
   retryCsvImport,
   getProduction,
   getDeliveries,
+  getUnscheduledDeliveries,
   getSupplierDeliverySummary,
   getDailyDeliveryReport,
   getOrdersReport,
   getSalesReport,
+  getReportDates,
   getReportSummary,
   downloadReportExport,
   downloadExport,
   scheduleDelivery,
   createProduct,
   updateProduct,
+  deleteProduct,
   getPriceLists,
+  getPricePromotions,
   upsertPriceList,
+  upsertPricePromotion,
+  updatePricePromotion,
+  deletePricePromotion,
+  deletePriceList,
   createDistributionCentre,
+  deleteDistributionCentre,
+  deleteOrder,
   resetTestData,
 };
 

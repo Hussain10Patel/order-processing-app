@@ -1,16 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import ConfirmDeleteModal from "../components/ConfirmDeleteModal";
 import DataTable from "../components/DataTable";
+import DcLabel from "../components/DcLabel";
 import OrdersFilters from "../components/OrdersFilters";
+import StatusLabel from "../components/StatusLabel";
 import StatusBlock from "../components/StatusBlock";
 import {
   adjustOrder,
   createMissingDistributionCentres,
   createManualOrder,
-  downloadExport,
+  deleteOrder,
   formatCurrency,
   formatDate,
   getDistributionCentres,
+  getOrderById,
   getOrders,
   getProducts,
   getSystemPrice,
@@ -18,6 +22,7 @@ import {
   updateOrderStatus,
   isFlaggedStatus,
 } from "../services/api";
+import { rowMatchesSelectedDcs } from "../utils/distributionCentre";
 
 const defaultManualForm = {
   orderNumber: "",
@@ -32,6 +37,62 @@ const statusOptions = [0, 1, 3, 4, 5, 8];
 function formatDecimal(value) {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount.toFixed(2) : "0.00";
+}
+
+function toSafeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getItemSku(item) {
+  return String(item?.skuCode ?? item?.productCode ?? item?.productName ?? "UNKNOWN").trim() || "UNKNOWN";
+}
+
+function normalizeOrderItem(rawItem) {
+  const rawQuantity = rawItem?.quantity;
+  const rawUnitPrice = rawItem?.unitPrice ?? rawItem?.price;
+  const rawLineTotal = rawItem?.lineTotal;
+
+  console.log("[UI ITEM RAW]", {
+    sku: getItemSku(rawItem),
+    quantity: rawQuantity,
+    unitPrice: rawUnitPrice,
+    lineTotal: rawLineTotal,
+  });
+
+  const quantity = toSafeNumber(rawQuantity, 0);
+  const unitPrice = toSafeNumber(rawUnitPrice, 0);
+  const lineTotal = Number.isFinite(Number(rawLineTotal))
+    ? Number(rawLineTotal)
+    : quantity * unitPrice;
+
+  const mappedItem = {
+    ...rawItem,
+    quantity,
+    price: unitPrice,
+    unitPrice,
+    lineTotal,
+  };
+
+  console.log("[UI ITEM MAP]", {
+    sku: getItemSku(mappedItem),
+    quantity: mappedItem.quantity,
+    unitPrice: mappedItem.unitPrice,
+    lineTotal: mappedItem.lineTotal,
+  });
+
+  return mappedItem;
+}
+
+function normalizeOrder(order) {
+  return {
+    ...order,
+    items: Array.isArray(order?.items) ? order.items.map(normalizeOrderItem) : [],
+  };
+}
+
+function normalizeOrders(orders) {
+  return (orders ?? []).map(normalizeOrder);
 }
 
 function calculateTotalQuantity(order) {
@@ -56,38 +117,22 @@ function normalizeText(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function getEffectiveStatus(order) {
-  const status = order?.status;
-
-  if (status === null || status === undefined || status === "") {
-    return "Flagged";
+function hasProductionRequired(order) {
+  if (Number(order?.productionRequired ?? 0) > 0) {
+    return true;
   }
 
-  const normalized = String(status).trim().toLowerCase();
+  return (order?.items ?? []).some((item) => Number(item?.productionRequired ?? 0) > 0);
+}
 
-  if (normalized === "processed" || normalized === "5") {
-    return "Processed";
-  }
+function isApprovedStatus(order) {
+  const normalizedStatus = String(order?.statusLabel ?? order?.status ?? "").trim().toLowerCase();
+  return normalizedStatus === "approved";
+}
 
-  if (normalized === "delivered" || normalized === "8") {
-    return "Delivered";
-  }
-
-  if (
-    normalized === "approved" ||
-    normalized === "validated" ||
-    normalized === "2" ||
-    normalized === "4"
-  ) {
-    return "Approved";
-  }
-
-  if (normalized === "flagged" || normalized === "1" || normalized === "3") {
-    return "Flagged";
-  }
-
-  // Safety: unknown values are returned as-is so terminal states are never downgraded.
-  return status;
+function canApproveOrder(order) {
+  const normalizedStatus = String(order?.statusLabel ?? order?.status ?? "").trim().toLowerCase();
+  return normalizedStatus === "flagged" || normalizedStatus === "validated" || normalizedStatus === "pending";
 }
 
 function getDisplayProductTitle(item) {
@@ -133,7 +178,7 @@ function OrdersPage() {
   const [productCodeFilter, setProductCodeFilter] = useState("");
   const [productNameFilter, setProductNameFilter] = useState("");
   const [status, setStatus] = useState("All");
-  const [distributionCentre, setDistributionCentre] = useState("All");
+  const [selectedDistributionCentreIds, setSelectedDistributionCentreIds] = useState([]);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -144,6 +189,7 @@ function OrdersPage() {
   const [sortDirection, setSortDirection] = useState("desc");
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [editedItems, setEditedItems] = useState([]);
+  const [hasDirtyDetailEdits, setHasDirtyDetailEdits] = useState(false);
   const [adjustmentNotes, setAdjustmentNotes] = useState("");
   const [adjusting, setAdjusting] = useState(false);
   const [adjustMessage, setAdjustMessage] = useState("");
@@ -156,11 +202,13 @@ function OrdersPage() {
   const [manualCentreFallback, setManualCentreFallback] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [lookupError, setLookupError] = useState("");
-  const [exporting, setExporting] = useState("");
   const [highlightedOrderNumber, setHighlightedOrderNumber] = useState("");
   const [pageLoading, setPageLoading] = useState(false);
   const [refreshNotice, setRefreshNotice] = useState("");
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState(null);
+  const [deletingOrder, setDeletingOrder] = useState(false);
+  const detailRequestTokenRef = useRef(0);
 
   const productsById = useMemo(() => {
     return new Map(products.map((product) => [Number(product.id), product]));
@@ -200,6 +248,8 @@ function OrdersPage() {
   useEffect(() => {
     async function handleOrdersRefresh() {
       setSelectedOrder(null);
+      setEditedItems([]);
+      setHasDirtyDetailEdits(false);
       setRefreshTick((current) => current + 1);
 
       await loadLookups();
@@ -245,8 +295,8 @@ function OrdersPage() {
           ...(productCodeFilter.trim() && { productCode: productCodeFilter.trim() }),
           ...(productNameFilter.trim() && { productName: productNameFilter.trim() }),
           ...(status && status !== "All" && { status }),
-          ...(distributionCentre && distributionCentre !== "All" && {
-            distributionCentreId: distributionCentre,
+          ...(selectedDistributionCentreIds.length === 1 && {
+            distributionCentreId: selectedDistributionCentreIds[0],
           }),
           ...(fromDate && { startDate: fromDate }),
           ...(toDate && { endDate: toDate }),
@@ -263,9 +313,9 @@ function OrdersPage() {
         }
 
         const normalizedOrders = Array.isArray(ordersData)
-          ? ordersData
+          ? normalizeOrders(ordersData)
           : Array.isArray(ordersData?.items)
-            ? ordersData.items
+            ? normalizeOrders(ordersData.items)
             : [];
         const nextTotalCount = Number(ordersData?.totalCount);
 
@@ -274,7 +324,7 @@ function OrdersPage() {
         });
 
         setOrders(normalizedOrders);
-        setTotalCount(Number.isFinite(nextTotalCount) && nextTotalCount > 0 ? nextTotalCount : normalizedOrders.length);
+        setTotalCount(normalizedOrders.length);
       } catch (requestError) {
         if (isDisposed) {
           return;
@@ -296,7 +346,7 @@ function OrdersPage() {
     return () => {
       isDisposed = true;
     };
-  }, [currentPage, distributionCentre, fromDate, pageSize, productCodeFilter, productNameFilter, refreshTick, search, status, toDate]);
+  }, [currentPage, fromDate, pageSize, productCodeFilter, productNameFilter, refreshTick, search, selectedDistributionCentreIds, status, toDate]);
 
   useEffect(() => {
     if (!pageLoading) {
@@ -393,11 +443,31 @@ function OrdersPage() {
     }
 
     const nextSelectedOrder = orders.find((order) => order.id === selectedOrder.id) ?? null;
+
+    if (!nextSelectedOrder) {
+      setSelectedOrder(null);
+      setEditedItems([]);
+      setHasDirtyDetailEdits(false);
+      return;
+    }
+
     setSelectedOrder(nextSelectedOrder);
-  }, [orders, selectedOrder]);
+
+    if (!hasDirtyDetailEdits) {
+      const normalizedOrder = normalizeOrder(nextSelectedOrder);
+      setEditedItems(normalizedOrder.items ?? []);
+    }
+  }, [orders, selectedOrder, hasDirtyDetailEdits]);
 
   useEffect(() => {
-    console.log("Items state:", editedItems);
+    editedItems.forEach((item) => {
+      console.log("[UI ITEM DISPLAY]", {
+        sku: getItemSku(item),
+        quantity: toSafeNumber(item?.quantity, 0),
+        unitPrice: toSafeNumber(item?.unitPrice ?? item?.price, 0),
+        lineTotal: toSafeNumber(item?.lineTotal, 0),
+      });
+    });
   }, [editedItems]);
 
   useEffect(() => {
@@ -410,7 +480,7 @@ function OrdersPage() {
 
     setSearch(focusOrderNumber);
     setStatus("All");
-    setDistributionCentre("All");
+    setSelectedDistributionCentreIds([]);
     setFromDate("");
     setToDate("");
     setCurrentPage(1);
@@ -435,18 +505,58 @@ function OrdersPage() {
     );
 
     if (matchedOrder) {
-      setSelectedOrder(matchedOrder);
-      setEditedItems(matchedOrder.items ?? []);
+      const normalizedMatchedOrder = normalizeOrder(matchedOrder);
+      setSelectedOrder(normalizedMatchedOrder);
+      setEditedItems(normalizedMatchedOrder.items ?? []);
+      setHasDirtyDetailEdits(false);
     }
   }, [highlightedOrderNumber, orders]);
 
-  function openOrderDetails(order) {
+  async function openOrderDetails(order) {
+    if (!order?.id) {
+      return;
+    }
+
     setAdjustMessage("");
     setRecalculateMessage("");
     setAdjustmentNotes("");
-    setSelectedOrder(order);
-    setEditedItems(order.items ?? []);
-    console.log("Items state:", order.items ?? []);
+    setHasDirtyDetailEdits(false);
+
+    const normalizedOrder = normalizeOrder(order);
+    setSelectedOrder(normalizedOrder);
+    setEditedItems(normalizedOrder.items ?? []);
+
+    const requestToken = detailRequestTokenRef.current + 1;
+    detailRequestTokenRef.current = requestToken;
+
+    try {
+      const latestOrder = await getOrderById(order.id);
+
+      if (detailRequestTokenRef.current !== requestToken || !latestOrder) {
+        return;
+      }
+
+      const normalizedLatestOrder = normalizeOrder(latestOrder);
+      setSelectedOrder(normalizedLatestOrder);
+      setEditedItems(normalizedLatestOrder.items ?? []);
+      setHasDirtyDetailEdits(false);
+    } catch (requestError) {
+      if (detailRequestTokenRef.current !== requestToken) {
+        return;
+      }
+
+      console.error("Failed loading latest order detail:", requestError);
+      setError(requestError.message || "Unable to refresh order detail");
+    }
+  }
+
+  function closeOrderDetails() {
+    setSelectedOrder(null);
+    setEditedItems([]);
+    setHasDirtyDetailEdits(false);
+    setAdjustMessage("");
+    setRecalculateMessage("");
+    setAdjustmentNotes("");
   }
 
   async function handleUpdateOrderStatus(order, newStatus) {
@@ -461,9 +571,18 @@ function OrdersPage() {
       await updateOrderStatus(order.id, newStatus);
       setError("");
       setRefreshTick((current) => current + 1);
+
+      if (String(newStatus).trim().toLowerCase() === "processed") {
+        window.dispatchEvent(new Event("orders:refresh"));
+      }
     } catch (requestError) {
       console.error("Failed updating order status:", requestError);
-      setError(requestError.message || "Failed updating order status");
+
+      if (String(newStatus).trim().toLowerCase() === "processed") {
+        setError("Insufficient stock to process this order");
+      } else {
+        setError(requestError.message || "Failed updating order status");
+      }
     } finally {
       setStatusUpdatingId(null);
     }
@@ -506,8 +625,12 @@ function OrdersPage() {
     return (order?.items ?? []).some((item) => isUnmappedProduct(item) || hasRecentlyMappedProduct(item));
   }
 
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => rowMatchesSelectedDcs(order, selectedDistributionCentreIds));
+  }, [orders, selectedDistributionCentreIds]);
+
   const sortedOrders = useMemo(() => {
-    return [...orders].sort((a, b) => {
+    return [...filteredOrders].sort((a, b) => {
       const direction = sortDirection === "asc" ? 1 : -1;
       const aValue = sortKey === "totalQuantity" ? calculateTotalQuantity(a) : a[sortKey];
       const bValue = sortKey === "totalQuantity" ? calculateTotalQuantity(b) : b[sortKey];
@@ -522,7 +645,7 @@ function OrdersPage() {
 
       return String(aValue ?? "").localeCompare(String(bValue ?? "")) * direction;
     });
-  }, [orders, sortKey, sortDirection]);
+  }, [filteredOrders, sortKey, sortDirection]);
 
   const paginatedOrders = useMemo(() => {
     const startIndex = (currentPage - 1) * pageSize;
@@ -530,8 +653,8 @@ function OrdersPage() {
   }, [currentPage, pageSize, sortedOrders]);
 
   const totalPages = useMemo(() => {
-    return Math.max(1, Math.ceil(totalCount / pageSize));
-  }, [pageSize, totalCount]);
+    return Math.max(1, Math.ceil(filteredOrders.length / pageSize));
+  }, [filteredOrders.length, pageSize]);
 
   useEffect(() => {
     if (currentPage <= totalPages) {
@@ -560,6 +683,7 @@ function OrdersPage() {
         key: "distributionCentreName",
         header: "Distribution Centre",
         sortable: true,
+        render: (row) => <DcLabel row={row} />,
       },
       {
         key: "totalQuantity",
@@ -576,9 +700,7 @@ function OrdersPage() {
 
           return (
             <div className="status-stack">
-              <span className={`status-chip ${row.statusLabel?.toLowerCase() ?? ""}`}>
-                {row.statusLabel}
-              </span>
+              <StatusLabel status={row.status} label={row.statusLabel} />
               {row.isPriceMissing ? (
                 <span className="badge orange" style={{ marginLeft: 8 }}>
                   No Price Configured
@@ -608,9 +730,13 @@ function OrdersPage() {
         key: "actions",
         header: "Actions",
         render: (row) => {
-          const status = getEffectiveStatus(row);
-          const showApprove = status === "Flagged";
-          const showProcess = status === "Approved";
+          const showApprove = canApproveOrder(row);
+          const showProcess = isApprovedStatus(row);
+          const disableProcessAction =
+            statusUpdatingId === row.id ||
+            hasProductionRequired(row) ||
+            !isApprovedStatus(row);
+          const disableApproveAction = statusUpdatingId === row.id;
 
           return (
             <div className="action-row">
@@ -628,7 +754,7 @@ function OrdersPage() {
                 <button
                   type="button"
                   className="secondary table-action-button"
-                  disabled={statusUpdatingId === row.id}
+                  disabled={disableApproveAction}
                   onClick={(event) => {
                     event.stopPropagation();
                     void handleUpdateOrderStatus(row, "Approved");
@@ -641,7 +767,7 @@ function OrdersPage() {
                 <button
                   type="button"
                   className="secondary table-action-button"
-                  disabled={statusUpdatingId === row.id}
+                  disabled={disableProcessAction}
                   onClick={(event) => {
                     event.stopPropagation();
                     void handleUpdateOrderStatus(row, "Processed");
@@ -650,6 +776,16 @@ function OrdersPage() {
                   Process
                 </button>
               )}
+              <button
+                type="button"
+                className="danger table-action-button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openDeleteDialog(row);
+                }}
+              >
+                Delete
+              </button>
             </div>
           );
         },
@@ -745,7 +881,7 @@ function OrdersPage() {
             type="number"
             min="0.01"
             step="0.01"
-            value={row.price ?? ""}
+            value={row.unitPrice ?? row.price ?? ""}
             onChange={(event) => {
               const rawValue = event.target.value;
               const normalizedValue = rawValue.replace(/,/g, ".");
@@ -774,7 +910,7 @@ function OrdersPage() {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
       return;
     }
-              systemPriceWarning: "You can enter price manually",
+
     setSortKey(nextKey);
     setSortDirection("asc");
   }
@@ -785,7 +921,7 @@ function OrdersPage() {
       productCodeFilter === "" &&
       productNameFilter === "" &&
       status === "All" &&
-      distributionCentre === "All" &&
+      selectedDistributionCentreIds.length === 0 &&
       fromDate === "" &&
       toDate === "" &&
       currentPage === 1;
@@ -794,7 +930,7 @@ function OrdersPage() {
     setProductCodeFilter("");
     setProductNameFilter("");
     setStatus("All");
-    setDistributionCentre("All");
+    setSelectedDistributionCentreIds([]);
     setFromDate("");
     setToDate("");
     setCurrentPage(1);
@@ -824,8 +960,8 @@ function OrdersPage() {
     setCurrentPage(1);
   }
 
-  function handleDistributionCentreChange(value) {
-    setDistributionCentre(value);
+  function handleDistributionCentreChange(values) {
+    setSelectedDistributionCentreIds(values);
     setCurrentPage(1);
   }
 
@@ -897,6 +1033,7 @@ function OrdersPage() {
     const normalizedValue = String(value ?? "").replace(/,/g, ".");
     const parsedValue = parseFloat(normalizedValue);
     const safeValue = Number.isFinite(parsedValue) ? parsedValue : 0;
+    setHasDirtyDetailEdits(true);
 
     setEditedItems((current) =>
       current.map((item, itemIndex) => {
@@ -904,9 +1041,19 @@ function OrdersPage() {
           return item;
         }
 
-        const nextItem = { ...item, [field]: safeValue };
+        const nextItem = { ...item };
+
+        if (field === "quantity") {
+          nextItem.quantity = safeValue;
+        }
+
+        if (field === "price") {
+          nextItem.price = safeValue;
+          nextItem.unitPrice = safeValue;
+        }
+
         const quantity = Number(field === "quantity" ? safeValue : nextItem.quantity);
-        const price = Number(field === "price" ? safeValue : nextItem.price);
+        const price = Number(field === "price" ? safeValue : (nextItem.unitPrice ?? nextItem.price));
         nextItem.lineTotal = quantity * price;
         return nextItem;
       })
@@ -1047,9 +1194,11 @@ function OrdersPage() {
       const updatedOrder = await adjustOrder(selectedOrder.id, payload);
 
       if (updatedOrder) {
-        setSelectedOrder(updatedOrder);
-        setEditedItems(updatedOrder.items ?? []);
-        setOrders((current) => current.map((order) => (order.id === updatedOrder.id ? updatedOrder : order)));
+        const normalizedUpdatedOrder = normalizeOrder(updatedOrder);
+        setSelectedOrder(normalizedUpdatedOrder);
+        setEditedItems(normalizedUpdatedOrder.items ?? []);
+        setHasDirtyDetailEdits(false);
+        setOrders((current) => current.map((order) => (order.id === normalizedUpdatedOrder.id ? normalizedUpdatedOrder : order)));
       }
 
       setAdjustMessage("Order adjusted successfully");
@@ -1074,7 +1223,10 @@ function OrdersPage() {
     try {
       const refreshedOrder = await recalculateOrder(selectedOrder.id);
       if (refreshedOrder) {
-        setSelectedOrder(refreshedOrder);
+        const normalizedRefreshedOrder = normalizeOrder(refreshedOrder);
+        setSelectedOrder(normalizedRefreshedOrder);
+        setEditedItems(normalizedRefreshedOrder.items ?? []);
+        setHasDirtyDetailEdits(false);
       }
 
       setRefreshTick((current) => current + 1);
@@ -1087,12 +1239,44 @@ function OrdersPage() {
     }
   }
 
-  async function handleExport(type) {
-    setExporting(type);
+  function openDeleteDialog(order) {
+    setDeleteDialog(order);
+  }
+
+  function closeDeleteDialog() {
+    if (deletingOrder) {
+      return;
+    }
+
+    setDeleteDialog(null);
+  }
+
+  async function confirmDeleteOrder() {
+    if (!deleteDialog?.id) {
+      return;
+    }
+
+    setDeletingOrder(true);
+
     try {
-      await downloadExport(type, fromDate || toDate || new Date().toISOString().slice(0, 10));
+      await deleteOrder(deleteDialog.id);
+
+      setOrders((current) => current.filter((order) => order.id !== deleteDialog.id));
+      setTotalCount((current) => Math.max(0, current - 1));
+
+      if (selectedOrder?.id === deleteDialog.id) {
+        setSelectedOrder(null);
+        setEditedItems([]);
+        setHasDirtyDetailEdits(false);
+      }
+
+      setError("");
+      setRefreshNotice("Order deleted successfully");
+    } catch (requestError) {
+      setError(requestError.message || "Failed deleting order");
     } finally {
-      setExporting("");
+      setDeletingOrder(false);
+      setDeleteDialog(null);
     }
   }
 
@@ -1100,24 +1284,13 @@ function OrdersPage() {
     <section>
       <header className="page-header">
         <h2>Orders Dashboard</h2>
-        <p>CSV to order verification, adjustments, delivery readiness, and exports.</p>
+        <p>CSV to order verification, adjustments, and delivery readiness.</p>
         {refreshNotice && <p className="status-text order-refresh-notice">{refreshNotice}</p>}
       </header>
 
       <div className="panel">
         <div className="section-heading">
           <h3>Orders</h3>
-          <div className="action-row">
-            <button type="button" className="secondary" onClick={() => handleExport("orders")} disabled={exporting !== ""}>
-              {exporting === "orders" ? "Exporting..." : "Export Orders"}
-            </button>
-            <button type="button" className="secondary" onClick={() => handleExport("delivery")} disabled={exporting !== ""}>
-              {exporting === "delivery" ? "Exporting..." : "Export Delivery"}
-            </button>
-            <button type="button" className="secondary" onClick={() => handleExport("pastel")} disabled={exporting !== ""}>
-              {exporting === "pastel" ? "Exporting..." : "Export Pastel"}
-            </button>
-          </div>
         </div>
 
         <OrdersFilters
@@ -1130,8 +1303,8 @@ function OrdersPage() {
           status={status}
           onStatus={handleStatusChange}
           statuses={statusOptions}
-          distributionCentre={distributionCentre}
-          onDistributionCentre={handleDistributionCentreChange}
+          selectedDistributionCentreIds={selectedDistributionCentreIds}
+          onSelectedDistributionCentreIds={handleDistributionCentreChange}
           distributionCentres={distributionCentres}
           fromDate={fromDate}
           onFromDate={handleFromDateChange}
@@ -1145,13 +1318,13 @@ function OrdersPage() {
         <StatusBlock
           loading={loading}
           error={error}
-          empty={!loading && !error && totalCount === 0}
+          empty={!loading && !error && filteredOrders.length === 0}
           loadingText="Loading orders..."
           emptyText="No orders found"
           spinner
         />
 
-        {!loading && !error && totalCount > 0 && (
+        {!loading && !error && filteredOrders.length > 0 && (
           <div className={`orders-table-region${pageLoading ? " is-loading" : ""}`}>
             <DataTable
               columns={columns}
@@ -1181,7 +1354,7 @@ function OrdersPage() {
 
             <div className="pagination-bar">
               <span className="pagination-summary">
-                {pageLoading ? "Loading page..." : `${totalCount} filtered orders`}
+                {pageLoading ? "Loading page..." : `${filteredOrders.length} filtered orders`}
               </span>
               <div className="pagination-controls">
                 <button type="button" className="secondary" onClick={() => changePage(currentPage - 1)} disabled={currentPage === 1 || loading || pageLoading}>
@@ -1218,15 +1391,13 @@ function OrdersPage() {
                   {recalculating ? "Recalculating..." : "Recalculate Order"}
                 </button>
               )}
-              <button type="button" className="secondary" onClick={() => setSelectedOrder(null)}>
+              <button type="button" className="secondary" onClick={closeOrderDetails}>
                 Close
               </button>
             </div>
           </div>
           <div className="detail-strip">
-            <span className={isFlaggedStatus(selectedOrder.status) ? "status-chip danger" : "status-chip"}>
-              {selectedOrder.statusLabel}
-            </span>
+            <StatusLabel status={selectedOrder.status} label={selectedOrder.statusLabel} />
             {selectedOrder.isPriceMissing && (
               <span className="status-chip" style={{backgroundColor: "#ff9800"}}>No Price Configured</span>
             )}
@@ -1253,7 +1424,7 @@ function OrdersPage() {
             </div>
             <div className="order-info-card">
               <span>Distribution Centre</span>
-              <strong>{selectedOrder.distributionCentreName || "-"}</strong>
+              <strong><DcLabel row={selectedOrder} /></strong>
             </div>
           </div>
 
@@ -1482,6 +1653,16 @@ function OrdersPage() {
           </p>
         )}
       </div>
+
+      <ConfirmDeleteModal
+        open={Boolean(deleteDialog)}
+        title="Delete Order"
+        message={`Are you sure you want to delete this? (${deleteDialog?.orderNumber ?? ""})`}
+        confirmText="Delete"
+        confirming={deletingOrder}
+        onCancel={closeDeleteDialog}
+        onConfirm={confirmDeleteOrder}
+      />
     </section>
   );
 }

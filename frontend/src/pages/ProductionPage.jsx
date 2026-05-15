@@ -1,346 +1,564 @@
 import { useEffect, useMemo, useState } from "react";
-import DataTable from "../components/DataTable";
+import DcLabel from "../components/DcLabel";
+import StatusLabel from "../components/StatusLabel";
 import StatusBlock from "../components/StatusBlock";
-import { getProduction } from "../services/api";
-
-const STOCK_STORAGE_KEY = "productionStock";
-
-function getToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function toYMD(date) {
-  return new Date(date).toISOString().split("T")[0];
-}
+import { getOrders, getProduction, saveProductionDecision, updateOrderStatus } from "../services/api";
 
 function toNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getRowStockKey(row) {
-  return `${row.productId ?? row.productCode ?? "product"}-${row.distributionCentreId ?? row.distributionCentreName ?? row.distributionCentre ?? "dc"}`;
+function formatDate(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "-";
+  return parsed.toLocaleDateString();
 }
 
-function readSavedStock() {
-  try {
-    return JSON.parse(localStorage.getItem(STOCK_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
+function normalizeOrders(rawOrders) {
+  return (rawOrders || []).map((order) => ({
+    ...order,
+    id: order.orderId,
+    items: (order.items || []).map((item) => {
+      const rawRequiredProductionQty = item.requiredProductionQty ?? item.decisionRequiredProductionQty;
+
+      return {
+        ...item,
+        quantity: toNumber(item.quantity),
+        pallets: toNumber(item.pallets),
+        currentStock: toNumber(item.currentStock),
+        requiredStock: toNumber(item.requiredStock),
+        difference: toNumber(item.difference),
+        remainingStock: toNumber(item.remainingStock),
+        productionRequired: toNumber(item.productionRequired),
+        requiredProductionQty:
+          rawRequiredProductionQty === null ||
+          rawRequiredProductionQty === undefined ||
+          rawRequiredProductionQty === ""
+            ? null
+            : toNumber(rawRequiredProductionQty),
+      };
+    }),
+  }));
 }
 
-function normalizeRows(rawRows, savedStock) {
-  return rawRows.map((row, index) => {
-    const totalQuantity = toNumber(row.totalQuantity ?? row.quantity);
-    const totalPallets = toNumber(row.totalPallets ?? row.pallets);
-    const stockKey = getRowStockKey(row);
-    const openingStock = toNumber(savedStock[stockKey] ?? 0);
-    const productionRequired = Math.max(0, totalQuantity - openingStock);
-
-    return {
-      ...row,
-      id:
-        row.id ??
-        `${row.productId ?? row.productCode ?? "product"}-${row.distributionCentreId ?? row.distributionCentreName ?? row.distributionCentre ?? index}`,
-      stockKey,
-      totalQuantity,
-      totalPallets,
-      openingStock,
-      productionRequired,
-    };
-  });
+function normalizeProcessedOrders(rawOrders) {
+  return (rawOrders || []).map((order) => ({
+    orderId: order.id,
+    id: order.id,
+    orderNumber: order.orderNumber,
+    deliveryDate: order.deliveryDate,
+    distributionCentreId: order.distributionCentreId,
+    distributionCentre: order.distributionCentreName,
+    status: order.statusLabel || order.status,
+    isProcessed: true,
+    items: (order.items || []).map((item) => ({
+      orderItemId: item.id,
+      productId: item.productId,
+      productCode: item.productCode || item.skuCode || "",
+      productName: item.productName || "",
+      quantity: toNumber(item.quantity),
+      pallets: toNumber(item.pallets),
+      currentStock: 0,
+      requiredStock: toNumber(item.quantity),
+      difference: 0,
+      productionRequired: 0,
+      requiredProductionQty: null,
+    })),
+  }));
 }
 
-function normalizeUnscheduled(rawRows) {
-  return rawRows.map((row, index) => {
-    const totalQuantity = toNumber(row.totalQuantity ?? row.quantity);
-    const totalPallets = toNumber(row.totalPallets ?? row.pallets);
-    return {
-      ...row,
-      id:
-        row.id ??
-        `unscheduled-${row.productId ?? row.productCode ?? "product"}-${row.distributionCentreId ?? row.distributionCentreName ?? row.distributionCentre ?? index}`,
-      totalQuantity,
-      totalPallets,
-      openingStock: 0,
-      productionRequired: totalQuantity,
-    };
-  });
-}
+function getExistingDecision(item) {
+  const hasRequiredProductionQty =
+    item.requiredProductionQty !== null &&
+    item.requiredProductionQty !== undefined &&
+    item.requiredProductionQty !== "";
 
-function sortByShortage(rows) {
-  return [...rows].sort((a, b) => toNumber(b.productionRequired) - toNumber(a.productionRequired));
-}
-
-function computeTotals(rows) {
-  return rows.reduce(
-    (acc, row) => {
-      acc.totalQuantity += toNumber(row.totalQuantity);
-      acc.totalPallets += toNumber(row.totalPallets);
-      acc.totalProductionRequired += toNumber(row.productionRequired);
-      return acc;
-    },
-    { totalQuantity: 0, totalPallets: 0, totalProductionRequired: 0 }
-  );
-}
-
-function renderApprovalBadge(status) {
-  const normalized = String(status || "").toLowerCase();
-
-  if (normalized === "validated") {
-    return (
-      <span className="badge orange" title="Order is not fully approved yet">
-        Not Approved
-      </span>
-    );
+  if (typeof item.decisionIsSufficient !== "boolean" && !hasRequiredProductionQty) {
+    return null;
   }
 
-  if (normalized === "approved") {
-    return <span className="badge green">Approved</span>;
-  }
-
-  if (normalized === "processed") {
-    return <span className="badge green">Processed</span>;
-  }
-
-  return <span className="badge yellow">Unknown</span>;
+  return {
+    isSufficient: item.decisionIsSufficient === true,
+    requiredProductionQty: hasRequiredProductionQty ? toNumber(item.requiredProductionQty) : null,
+  };
 }
 
-function renderProductionBadge(productionRequired) {
-  return toNumber(productionRequired) > 0 ? (
-    <span className="badge orange">Shortage</span>
-  ) : (
-    <span className="badge green">OK</span>
-  );
+function isRequiredProductionQtySet(value) {
+  return value !== null && value !== undefined && value !== "";
 }
 
-function ProductionSection({ title, badge, helperText, rows, onUpdateStock, faded }) {
-  const totals = useMemo(() => computeTotals(rows), [rows]);
+function normalizeOrderStatus(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
 
-  const isUnscheduled = faded;
+function isOrderProcessed(order) {
+  if (order?.isProcessed === true) {
+    return true;
+  }
 
-  const columns = [
-    {
-      key: "product",
-      header: "Product",
-      render: (row) => {
-        const name = row.productName || row.product || "Unknown";
-        const code = row.productCode ? ` (${row.productCode})` : "";
-        return `${name}${code}`;
-      },
-    },
-    {
-      key: "distributionCentre",
-      header: "Distribution Centre",
-      render: (row) => row.distributionCentreName || row.distributionCentre || "-",
-    },
-    {
-      key: "totalQuantity",
-      header: "Total Quantity",
-      render: (row) => toNumber(row.totalQuantity).toFixed(0),
-    },
-    {
-      key: "totalPallets",
-      header: "Total Pallets",
-      render: (row) => toNumber(row.totalPallets).toFixed(2),
-    },
-    {
-      key: "openingStock",
-      header: "Opening Stock",
-      render: (row, index) =>
-        isUnscheduled ? (
-          <input type="number" value={row.openingStock} disabled style={{ opacity: 0.4 }} />
-        ) : (
-          <input
-            type="number"
-            value={row.openingStock}
-            onChange={(event) => onUpdateStock(index, event.target.value)}
-          />
-        ),
-    },
-    {
-      key: "productionRequired",
-      header: isUnscheduled ? "Potential Required" : "Production Required",
-      render: (row) => Math.max(0, toNumber(row.productionRequired)).toFixed(0),
-    },
-    {
-      key: "approvalStatus",
-      header: "Approval Status",
-      render: (row) => renderApprovalBadge(row.status),
-    },
-    {
-      key: "productionStatus",
-      header: "Production Status",
-      render: (row) => renderProductionBadge(row.productionRequired),
-    },
-  ];
+  const normalizedStatus = normalizeOrderStatus(order?.status);
+  return normalizedStatus === "processed" || normalizedStatus === "5";
+}
 
+function isOrderEditable(order) {
+  const normalizedStatus = normalizeOrderStatus(order?.status);
   return (
-    <div className="panel" style={faded ? { opacity: 0.75 } : {}}>
-      <div className="section-heading">
-        <h3>{title}</h3>
-        {badge}
-      </div>
-      <p className="status-text" style={{ marginBottom: 8 }}>{helperText}</p>
-
-      {rows.length === 0 ? (
-        <p className="status-text">No records found</p>
-      ) : (
-        <>
-          <DataTable
-            columns={columns}
-            data={rows}
-            rowKey="id"
-            rowClassName={(row) => (toNumber(row.productionRequired) > 0 ? "row-shortage" : "")}
-            sortKey=""
-            sortDirection="asc"
-            onSort={() => {}}
-          />
-          <div style={{ marginTop: 10 }}>
-            <p className="status-text">Total Quantity: {totals.totalQuantity.toFixed(0)}</p>
-            <p className="status-text">Total Pallets: {totals.totalPallets.toFixed(2)}</p>
-            <p className="status-text">
-              {isUnscheduled ? "Total Potential Required" : "Total Production Required"}:{" "}
-              {totals.totalProductionRequired.toFixed(0)}
-            </p>
-          </div>
-        </>
-      )}
-    </div>
+    normalizedStatus === "approved" ||
+    normalizedStatus === "inproduction" ||
+    normalizedStatus === "processed" ||
+    normalizedStatus === "6" ||
+    normalizedStatus === "5"
   );
 }
 
 function ProductionPage() {
-  const [date, setDate] = useState(getToday());
-  const [scheduledRows, setScheduledRows] = useState([]);
-  const [unscheduledRows, setUnscheduledRows] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [expandedOrders, setExpandedOrders] = useState({});
+  const [decisionsByOrder, setDecisionsByOrder] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [savedStock, setSavedStock] = useState(readSavedStock);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [savingItemIds, setSavingItemIds] = useState({});
+  const [processingOrderId, setProcessingOrderId] = useState(null);
+  const [editedStockByItemId, setEditedStockByItemId] = useState({});
 
-  async function loadProduction(selectedDate) {
+  async function loadProduction() {
     setLoading(true);
     setError("");
 
     try {
-      const formattedDate = toYMD(selectedDate);
+      const [productionResponse, processedResponse] = await Promise.all([
+        getProduction(),
+        getOrders({ status: "5" }),
+      ]);
 
-      console.log("[UI] Selected date:", selectedDate);
-      console.log("[API CALL] Date sent:", formattedDate);
+      console.log("[PRODUCTION FETCH RESPONSE]", productionResponse);
+      console.log("[PRODUCTION FETCH PROCESSED RESPONSE]", processedResponse);
 
-      const res = await getProduction(formattedDate);
+      const productionOrders = normalizeOrders(productionResponse?.orders || []);
+      const processedOrdersRaw = Array.isArray(processedResponse)
+        ? processedResponse
+        : Array.isArray(processedResponse?.items)
+          ? processedResponse.items
+          : [];
+      const processedOrders = normalizeProcessedOrders(processedOrdersRaw);
 
-      console.log("[API RESPONSE]", res);
-      if (!res || (!res.scheduled?.length && !res.unscheduled?.length)) {
-        console.warn("[EMPTY DATA] No production data returned for date:", formattedDate);
-      }
-      console.log("Scheduled rows:", res.scheduled);
-      console.log("Unscheduled rows:", res.unscheduled);
+      const mergedByOrderId = new Map();
+      productionOrders.forEach((order) => {
+        mergedByOrderId.set(order.orderId, order);
+      });
+      processedOrders.forEach((order) => {
+        if (!mergedByOrderId.has(order.orderId)) {
+          mergedByOrderId.set(order.orderId, order);
+        }
+      });
 
-      const normalizedScheduled = sortByShortage(normalizeRows(res.scheduled || [], savedStock));
-      const normalizedUnscheduled = normalizeUnscheduled(res.unscheduled || []);
+      const allOrders = [...mergedByOrderId.values()].sort((left, right) => {
+        const leftDate = new Date(left.deliveryDate || 0).getTime();
+        const rightDate = new Date(right.deliveryDate || 0).getTime();
 
-      console.log("[SCHEDULED NORMALIZED]", normalizedScheduled);
-      console.log("[UNSCHEDULED NORMALIZED]", normalizedUnscheduled);
+        if (leftDate !== rightDate) {
+          return leftDate - rightDate;
+        }
 
-      setScheduledRows(normalizedScheduled);
-      setUnscheduledRows(normalizedUnscheduled);
+        return String(left.orderNumber || "").localeCompare(String(right.orderNumber || ""));
+      });
+      console.log("[PRODUCTION FETCH] orders array length:", allOrders.length);
+
+      allOrders.forEach((order, index) => {
+        const rawStatus = order?.status;
+        const normalizedStatus = String(rawStatus || "").trim().toLowerCase();
+
+        console.log("[PRODUCTION ORDER STATUS]", {
+          index,
+          orderId: order?.orderId,
+          orderNumber: order?.orderNumber,
+          status: rawStatus,
+          statusType: typeof rawStatus,
+          normalizedStatus,
+        });
+      });
+
+      setOrders(allOrders);
+      setEditedStockByItemId(() => {
+        const nextStockByItemId = {};
+        allOrders.forEach((order) => {
+          (order.items || []).forEach((item) => {
+            nextStockByItemId[item.orderItemId] = toNumber(item.currentStock);
+          });
+        });
+
+        return nextStockByItemId;
+      });
+
+      setExpandedOrders((previous) => {
+        if (Object.keys(previous).length > 0) {
+          return previous;
+        }
+
+        const firstOrder = allOrders[0];
+        return firstOrder ? { [firstOrder.orderId]: true } : {};
+      });
+
+      setDecisionsByOrder(() => {
+        const initial = {};
+
+        allOrders.forEach((order) => {
+          const itemDecisions = {};
+
+          order.items.forEach((item) => {
+            const existing = getExistingDecision(item);
+            if (existing) {
+              itemDecisions[item.orderItemId] = existing;
+            }
+          });
+
+          if (Object.keys(itemDecisions).length > 0) {
+            initial[order.orderId] = itemDecisions;
+          }
+        });
+
+        return initial;
+      });
     } catch (requestError) {
-      setScheduledRows([]);
-      setUnscheduledRows([]);
-      setError(requestError.message || "Failed loading production");
+      setOrders([]);
+      setError(requestError.message || "Failed loading production orders");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadProduction(date);
-  }, [date]);
+    loadProduction();
+  }, []);
 
-  useEffect(() => {
-    if (!loading && !error && scheduledRows.length === 0 && unscheduledRows.length === 0) {
-      console.log("[EMPTY CHECK]", {
-        scheduledLength: scheduledRows.length,
-        unscheduledLength: unscheduledRows.length,
-      });
-    }
-  }, [scheduledRows, unscheduledRows, loading, error]);
+  const filteredOrders = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    if (!normalizedSearch) return orders;
 
-  function makeUpdateStock(setter) {
-    return function updateStock(index, value) {
-      const parsed = Number(value);
-      const openingStock = Number.isFinite(parsed) ? parsed : 0;
+    return orders.filter((order) =>
+      String(order.orderNumber || "").toLowerCase().includes(normalizedSearch)
+    );
+  }, [orders, searchTerm]);
 
-      setter((current) => {
-        const targetRow = current[index];
-        if (targetRow?.stockKey) {
-          setSavedStock((previous) => {
-            const updatedStock = { ...previous, [targetRow.stockKey]: openingStock };
-            localStorage.setItem(STOCK_STORAGE_KEY, JSON.stringify(updatedStock));
-            return updatedStock;
-          });
-        }
+  const hasOrders = orders.length > 0;
 
-        const updatedRows = current.map((row, rowIndex) => {
-          if (rowIndex !== index) return row;
-          const productionRequired = Math.max(0, toNumber(row.totalQuantity) - openingStock);
-          return { ...row, openingStock, productionRequired };
-        });
-
-        return sortByShortage(updatedRows);
-      });
-    };
+  function toggleOrder(orderId) {
+    setExpandedOrders((current) => ({
+      ...current,
+      [orderId]: !current[orderId],
+    }));
   }
 
-  const hasAny = scheduledRows.length > 0 || unscheduledRows.length > 0;
+  function isItemSaving(orderItemId) {
+    return Boolean(savingItemIds[orderItemId]);
+  }
+
+  function setItemSaving(orderItemId, isSaving) {
+    setSavingItemIds((current) => ({
+      ...current,
+      [orderItemId]: isSaving,
+    }));
+  }
+
+  function getOrderDecisions(orderId) {
+    return decisionsByOrder[orderId] || {};
+  }
+
+  function isItemResolved(item, decision) {
+    if (decision?.isSufficient === true) {
+      return true;
+    }
+
+    if (isRequiredProductionQtySet(decision?.requiredProductionQty)) {
+      return true;
+    }
+
+    if (item?.decisionIsSufficient === true) {
+      return true;
+    }
+
+    return isRequiredProductionQtySet(item?.requiredProductionQty);
+  }
+
+  function isOrderComplete(order) {
+    const decisions = getOrderDecisions(order.orderId);
+    return order.items.length > 0 && order.items.every((item) => isItemResolved(item, decisions[item.orderItemId]));
+  }
+
+  function getEditedInitialStock(item) {
+    const editedValue = editedStockByItemId[item.orderItemId];
+    if (editedValue === undefined) {
+      return toNumber(item.currentStock);
+    }
+
+    return toNumber(editedValue);
+  }
+
+  function updateEditedInitialStock(orderItemId, value) {
+    const parsedValue = Number(value);
+    const normalizedValue = Number.isFinite(parsedValue) ? Math.max(0, parsedValue) : 0;
+
+    setEditedStockByItemId((current) => ({
+      ...current,
+      [orderItemId]: normalizedValue,
+    }));
+  }
+
+  async function submitDecision(order, item, isSufficient) {
+    const editedInitialStock = getEditedInitialStock(item);
+
+    setItemSaving(item.orderItemId, true);
+    setError("");
+
+    try {
+      const payload = {
+        orderId: order.orderId,
+        decisions: [
+          {
+            orderItemId: item.orderItemId,
+            isSufficient,
+            requiredProductionQty: 0,
+            manualInitialStock: editedInitialStock,
+            notes: `Manual stock entered: ${editedInitialStock}`,
+          },
+        ],
+      };
+
+      await saveProductionDecision(payload);
+      await loadProduction();
+    } catch (requestError) {
+      setError(requestError.message || "Failed to save production decision");
+    } finally {
+      setItemSaving(item.orderItemId, false);
+    }
+  }
+
+  async function processOrder(order) {
+    if (!order?.orderId) {
+      return;
+    }
+
+    setProcessingOrderId(order.orderId);
+    setError("");
+
+    try {
+      await updateOrderStatus(order.orderId, "Processed");
+      window.dispatchEvent(new Event("orders:refresh"));
+      await loadProduction();
+    } catch (requestError) {
+      console.error("Failed processing order:", requestError);
+      setError("Insufficient stock to process this order");
+    } finally {
+      setProcessingOrderId(null);
+    }
+  }
 
   return (
     <section>
       <header className="page-header">
-        <h2>Production Planning</h2>
-        <p>Review production demand by delivery date.</p>
-        <p className="status-text">Production is based on scheduled delivery dates</p>
+        <h2>Production Workflow</h2>
+        <p>Review approved and processed orders, then confirm stock decisions per item.</p>
       </header>
 
-      <div className="panel">
-        <div style={{ maxWidth: 240 }}>
-          <label>Production Date</label>
-          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div style={{ maxWidth: 360 }}>
+          <label htmlFor="production-order-search">Search Order Number</label>
+          <input
+            id="production-order-search"
+            type="text"
+            placeholder="e.g. ORD-10021"
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+          />
         </div>
 
         <StatusBlock
           loading={loading}
           error={error}
-          empty={!loading && !error && !hasAny}
-          loadingText="Loading production data..."
-          emptyText="No production records found"
+          empty={!loading && !error && !hasOrders}
+          loadingText="Loading production orders..."
+          emptyText="No production orders found"
           spinner
         />
       </div>
 
-      {!loading && !error && (
-        <>
-          <ProductionSection
-            title="Scheduled Production"
-            badge={<span className="badge green" style={{ marginLeft: 8 }}>Confirmed</span>}
-            helperText="These orders are scheduled for delivery and must be produced"
-            rows={scheduledRows}
-            onUpdateStock={makeUpdateStock(setScheduledRows)}
-            faded={false}
-          />
-
-          <ProductionSection
-            title="Unscheduled Demand"
-            badge={<span className="badge orange" style={{ marginLeft: 8 }}>Not Scheduled</span>}
-            helperText="These orders are not yet scheduled but may require production"
-            rows={unscheduledRows}
-            onUpdateStock={makeUpdateStock(setUnscheduledRows)}
-            faded
-          />
-        </>
+      {!loading && !error && hasOrders && filteredOrders.length === 0 && (
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <p className="status-text">No matching order number found</p>
+        </div>
       )}
+
+      {!loading && !error &&
+        filteredOrders.map((order) => {
+          const decisions = getOrderDecisions(order.orderId);
+          const expanded = Boolean(expandedOrders[order.orderId]);
+          const complete = isOrderComplete(order);
+          const processed = isOrderProcessed(order);
+          const editable = isOrderEditable(order);
+          const hasProductionRequired = (order.items || []).some(
+            (item) => Number(item?.productionRequired ?? 0) > 0
+          );
+          const disableProcess =
+            !complete ||
+            !editable ||
+            hasProductionRequired ||
+            processingOrderId === order.orderId;
+
+          return (
+            <article key={order.orderId} className="panel" style={{ marginBottom: 14 }}>
+              <button
+                type="button"
+                onClick={() => toggleOrder(order.orderId)}
+                style={{
+                  width: "100%",
+                  border: "none",
+                  background: "transparent",
+                  textAlign: "left",
+                  padding: 0,
+                  cursor: "pointer",
+                }}
+              >
+                <div className="section-heading">
+                  <h3 style={{ marginBottom: 4 }}>
+                    {expanded ? "v" : ">"} Order {order.orderNumber || order.orderId}
+                  </h3>
+                  <StatusLabel status={order.status} label={order.status} />
+                </div>
+                <p className="status-text" style={{ marginBottom: 4 }}>
+                  Delivery: {formatDate(order.deliveryDate)}
+                </p>
+                <p className="status-text">Distribution Centre: <DcLabel row={order} /></p>
+              </button>
+
+              {expanded && (
+                <div style={{ marginTop: 12, overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
+                        <th style={{ textAlign: "right", padding: "8px 6px" }}>Quantity</th>
+                        <th style={{ textAlign: "right", padding: "8px 6px" }}>Pallets</th>
+                        <th style={{ textAlign: "right", padding: "8px 6px" }}>Entered Stock</th>
+                        <th style={{ textAlign: "right", padding: "8px 6px" }}>Required Stock</th>
+                        <th style={{ textAlign: "right", padding: "8px 6px" }}>Stock Leftover</th>
+                        <th style={{ textAlign: "left", padding: "8px 6px" }}>Decision</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {order.items.map((item) => {
+                        const itemDecision = decisions[item.orderItemId];
+                        const saving = isItemSaving(item.orderItemId);
+                        const currentStockValue = getEditedInitialStock(item);
+                        const hasRemainingStock = item.remainingStock !== undefined && item.remainingStock !== null;
+                        const stockLeftover = hasRemainingStock
+                          ? Number(item.remainingStock)
+                          : toNumber(item.currentStock) - toNumber(item.requiredStock);
+                        const isShortage = stockLeftover < 0;
+
+                        console.log("[UI STOCK VALUE]", item.productName, currentStockValue);
+
+                        return (
+                          <tr key={item.orderItemId}>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
+                              {item.productName || "Unknown"}
+                            </td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
+                              {toNumber(item.quantity).toFixed(0)}
+                            </td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
+                              {toNumber(item.pallets).toFixed(2)}
+                            </td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={currentStockValue}
+                                disabled={!editable}
+                                onChange={(event) => updateEditedInitialStock(item.orderItemId, event.target.value)}
+                                style={{ width: 90, textAlign: "right" }}
+                              />
+                            </td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
+                              {toNumber(item.requiredStock).toFixed(0)}
+                            </td>
+                            <td
+                              style={{
+                                padding: "8px 6px",
+                                borderTop: "1px solid #eee",
+                                textAlign: "right",
+                                color: isShortage ? "var(--danger-color, #b00020)" : "inherit",
+                                fontWeight: isShortage ? 700 : 400,
+                              }}
+                            >
+                              {stockLeftover.toFixed(2)}
+                            </td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <span
+                                  className={isShortage ? "badge orange" : "badge green"}
+                                  style={{ alignSelf: "center" }}
+                                >
+                                  {isShortage ? "Shortage" : "Stock Leftover OK"}: {stockLeftover.toFixed(2)}
+                                </span>
+                                {editable && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn-success"
+                                      disabled={saving}
+                                      onClick={() => submitDecision(order, item, true)}
+                                    >
+                                      OK
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn-warning"
+                                      disabled={saving}
+                                      onClick={() => submitDecision(order, item, false)}
+                                    >
+                                      Produce More
+                                    </button>
+                                  </>
+                                )}
+                                {itemDecision && (
+                                  <span className="badge green" style={{ alignSelf: "center" }}>
+                                    {itemDecision.isSufficient ? "OK saved" : "Produce More saved"}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <span className={complete ? "badge green" : "badge orange"}>
+                      {complete ? "All items handled" : "Pending item decisions"}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={disableProcess}
+                      onClick={() => {
+                        void processOrder(order);
+                      }}
+                    >
+                      {processed ? "Reprocess Order" : "Process Order"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </article>
+          );
+        })}
     </section>
   );
 }

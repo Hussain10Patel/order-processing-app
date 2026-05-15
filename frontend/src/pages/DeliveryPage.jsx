@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import DcLabel from "../components/DcLabel";
 import DataTable from "../components/DataTable";
+import MultiDcFilter from "../components/MultiDcFilter";
+import StatusLabel from "../components/StatusLabel";
 import StatusBlock from "../components/StatusBlock";
-import { formatDate, getDeliveries, getOrders, getUnscheduledOrders, scheduleDelivery } from "../services/api";
+import { formatDate, getDeliveries, getOrders, getUnscheduledDeliveries, scheduleDelivery } from "../services/api";
+import { rowMatchesSelectedDcs } from "../utils/distributionCentre";
 
 async function resolveOrderByNumber(orderNumber) {
   console.log("Resolving order number:", orderNumber);
@@ -27,12 +31,43 @@ function getToday() {
 }
 
 function toYMD(d) {
-  if (!d) return getToday();
+  if (!d) return "";
   return new Date(d).toISOString().split("T")[0];
 }
 
+function toOrdersArray(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.items)) {
+    return payload.items;
+  }
+
+  if (Array.isArray(payload?.data)) {
+    return payload.data;
+  }
+
+  return [];
+}
+
+function dedupeRows(rows, getKey) {
+  const map = new Map();
+
+  rows.forEach((row) => {
+    const key = Number(getKey(row));
+    if (!Number.isFinite(key) || map.has(key)) {
+      return;
+    }
+
+    map.set(key, row);
+  });
+
+  return [...map.values()];
+}
+
 function DeliveryPage() {
-  const [date, setDate] = useState(getToday());
+  const [date, setDate] = useState("");
   const [rows, setRows] = useState([]);
   const [unscheduledRows, setUnscheduledRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -40,6 +75,8 @@ function DeliveryPage() {
   const [message, setMessage] = useState("");
   const [warningMessage, setWarningMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [distributionCentres, setDistributionCentres] = useState([]);
+  const [selectedDistributionCentreIds, setSelectedDistributionCentreIds] = useState([]);
 
   const [form, setForm] = useState({
     orderNumber: "",
@@ -47,28 +84,39 @@ function DeliveryPage() {
     notes: "",
   });
 
-  async function loadSchedule(dateValue) {
+  async function loadSchedule() {
     setLoading(true);
     setError("");
 
     try {
-      const normalizedDate = toYMD(dateValue);
-      console.log("Selected date:", normalizedDate);
-      const [deliveryData, ordersData] = await Promise.all([
-        getDeliveries({ date: normalizedDate }),
-        getUnscheduledOrders({ date: normalizedDate }),
+      console.log("Loading all delivery-eligible orders");
+      const [deliveryData, unscheduledData] = await Promise.all([
+        getDeliveries(),
+        getUnscheduledDeliveries(),
       ]);
-      console.log("Deliveries returned:", deliveryData);
+      console.log("[DELIVERY FETCH RESPONSE] Deliveries:", deliveryData);
+      console.log("[DELIVERY FETCH RESPONSE] Unscheduled:", unscheduledData);
 
-      const scheduled = Array.isArray(deliveryData) ? deliveryData : deliveryData?.data ?? [];
+      const scheduledRaw = Array.isArray(deliveryData) ? deliveryData : deliveryData?.data ?? [];
+      const scheduled = dedupeRows(scheduledRaw, (row) => row.id ?? row.orderId);
       setRows(scheduled);
 
-      const scheduledOrderIds = new Set(scheduled.map((r) => r.orderId));
-      const allOrders = Array.isArray(ordersData) ? ordersData : ordersData?.items ?? ordersData?.data ?? [];
-      const unscheduled = allOrders.filter(
-        (o) => toYMD(o.deliveryDate) === normalizedDate && !scheduledOrderIds.has(o.id)
+      const unscheduledOrdersRaw = toOrdersArray(unscheduledData);
+      const unscheduledOrders = dedupeRows(unscheduledOrdersRaw, (row) => row.id ?? row.orderId);
+
+      setDistributionCentres(
+        [...scheduled, ...unscheduledOrders]
+          .map((row) => ({
+            id: Number(row.distributionCentreId),
+            name: row.distributionCentreName || row.distributionCentre || "Unknown DC",
+          }))
+          .filter((row, index, array) =>
+            Number.isFinite(row.id) &&
+            row.name &&
+            array.findIndex((item) => item.id === row.id) === index
+          )
       );
-      setUnscheduledRows(unscheduled);
+      setUnscheduledRows(unscheduledOrders);
     } catch (requestError) {
       setRows([]);
       setUnscheduledRows([]);
@@ -79,8 +127,40 @@ function DeliveryPage() {
   }
 
   useEffect(() => {
-    loadSchedule(date);
+    loadSchedule();
+  }, []);
+
+  useEffect(() => {
+    function handleOrdersRefresh() {
+      void loadSchedule();
+    }
+
+    window.addEventListener("orders:refresh", handleOrdersRefresh);
+    return () => {
+      window.removeEventListener("orders:refresh", handleOrdersRefresh);
+    };
+  }, []);
+
+  const filteredByDate = useMemo(() => {
+    if (!date) {
+      return () => true;
+    }
+
+    const selectedDate = toYMD(date);
+    return (value) => toYMD(value) === selectedDate;
   }, [date]);
+
+  const filteredRows = useMemo(() => {
+    return rows.filter(
+      (row) => rowMatchesSelectedDcs(row, selectedDistributionCentreIds) && filteredByDate(row.deliveryDate)
+    );
+  }, [filteredByDate, rows, selectedDistributionCentreIds]);
+
+  const filteredUnscheduledRows = useMemo(() => {
+    return unscheduledRows.filter(
+      (row) => rowMatchesSelectedDcs(row, selectedDistributionCentreIds) && filteredByDate(row.deliveryDate)
+    );
+  }, [filteredByDate, selectedDistributionCentreIds, unscheduledRows]);
 
   async function submitSchedule(event) {
     event.preventDefault();
@@ -118,9 +198,9 @@ function DeliveryPage() {
 
       setMessage("Delivery scheduled successfully");
       setForm((current) => ({ ...current, orderNumber: "", notes: "" }));
-      setDate(schedulingDate);
-      await loadSchedule(schedulingDate);
+      await loadSchedule();
     } catch (submitError) {
+      console.error("Scheduling failed:", submitError);
       if (submitError.message === "Order not found" || submitError.status === 404) {
         setMessage("Order not found");
       } else if (submitError.status === 422) {
@@ -201,29 +281,49 @@ function DeliveryPage() {
           <label>Daily List Date</label>
           <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
         </div>
-        <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Selected: {date}</div>
+        <div style={{ marginBottom: 10 }}>
+          <MultiDcFilter
+            label="Filter By Distribution Centres"
+            distributionCentres={distributionCentres}
+            selectedIds={selectedDistributionCentreIds}
+            onChange={setSelectedDistributionCentreIds}
+          />
+        </div>
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>
+          Selected: {date || "All dates"}
+        </div>
 
         <StatusBlock
           loading={loading}
           error={error}
-          empty={!loading && !error && rows.length === 0}
+          empty={!loading && !error && filteredRows.length === 0}
           loadingText="Loading deliveries..."
-          emptyText="No deliveries found"
+          emptyText="No scheduled orders match current filters"
           spinner
         />
 
-        {!loading && !error && rows.length > 0 && (
+        {!loading && !error && filteredRows.length > 0 && (
           <DataTable
             columns={[
               { key: "orderId", header: "Order ID" },
               { key: "orderNumber", header: "Order Number" },
-              { key: "distributionCentre", header: "Distribution Centre" },
+              {
+                key: "distributionCentre",
+                header: "Distribution Centre",
+                render: (row) => <DcLabel row={row} />,
+              },
               { key: "deliveryDate", header: "Delivery Date", render: (row) => (<><span>{formatDate(row.deliveryDate)}</span><div style={{fontSize:10,color:"#888"}}>Row Date: {row.deliveryDate?.slice(0,10)}</div></>) },
-              { key: "status", header: "Status" },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => (
+                  <StatusLabel status={row.orderStatus || row.status} label={row.orderStatus || row.status} />
+                ),
+              },
               { key: "totalPallets", header: "Total Pallets" },
               { key: "notes", header: "Notes", render: (row) => row.notes || "-" },
             ]}
-            data={rows}
+            data={filteredRows}
             rowKey="id"
             sortKey=""
             sortDirection="asc"
@@ -231,8 +331,8 @@ function DeliveryPage() {
           />
         )}
 
-        {!loading && !error && rows.length === 0 && (
-          <p className="status-text">No data found</p>
+        {!loading && !error && filteredRows.length === 0 && (
+          <p className="status-text">No scheduled orders match current filters</p>
         )}
       </div>
 
@@ -241,18 +341,18 @@ function DeliveryPage() {
 
         {loading && <p className="status-text">Loading...</p>}
 
-        {!loading && unscheduledRows.length === 0 && (
-          <p className="status-text">All orders for this date are scheduled</p>
+        {!loading && filteredUnscheduledRows.length === 0 && (
+          <p className="status-text">No unscheduled orders match current filters</p>
         )}
 
-        {!loading && unscheduledRows.length > 0 && (
+        {!loading && filteredUnscheduledRows.length > 0 && (
           <DataTable
             columns={[
               { key: "orderNumber", header: "Order Number" },
               {
                 key: "distributionCentreName",
                 header: "DC",
-                render: (row) => row.distributionCentreName || "-",
+                render: (row) => <DcLabel row={row} />,
               },
               {
                 key: "deliveryDate",
@@ -263,7 +363,7 @@ function DeliveryPage() {
                 key: "statusLabel",
                 header: "Status",
                 render: (row) => (
-                  <span className="badge orange">{row.statusLabel || "Not Scheduled"}</span>
+                  <StatusLabel status={row.status} label={row.statusLabel || row.status || "Not Scheduled"} />
                 ),
               },
               {
@@ -286,7 +386,7 @@ function DeliveryPage() {
                 ),
               },
             ]}
-            data={unscheduledRows}
+            data={filteredUnscheduledRows}
             rowKey="id"
             sortKey=""
             sortDirection="asc"

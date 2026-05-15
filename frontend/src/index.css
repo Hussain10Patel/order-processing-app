@@ -357,6 +357,111 @@ tr.row-unmapped-product {
   margin-top: 6px;
 }
 
+.dc-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.dc-label::before {
+  content: "DC";
+  font-size: 10px;
+  font-weight: 700;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+  background: #f0fdfa;
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.multi-dc-dropdown {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.multi-dc-dropdown summary {
+  padding: 8px 10px;
+  cursor: pointer;
+  color: #334155;
+  font-weight: 500;
+}
+
+.multi-dc-options {
+  border-top: 1px solid #e2e8f0;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.multi-dc-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 500;
+}
+
+.multi-dc-chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.multi-dc-chip {
+  background: #f0fdfa;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.promo-price {
+  display: grid;
+  gap: 2px;
+}
+
+.promo-price.compact {
+  gap: 1px;
+}
+
+.promo-price-active {
+  color: #166534;
+  font-weight: 700;
+}
+
+.promo-price-base {
+  color: #334155;
+  font-weight: 600;
+}
+
+.promo-price-original {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.promo-state {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.promo-state.active {
+  color: #15803d;
+}
+
+.promo-state.upcoming {
+  color: #b45309;
+}
+
+.promo-state.expired {
+  color: #b91c1c;
+}
+
 .status-chip {
   display: inline-block;
   padding: 2px 8px;
@@ -378,6 +483,21 @@ tr.row-unmapped-product {
 .status-chip.success {
   background: #dcfce7;
   color: #166534;
+}
+
+.status-chip.status-approved {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-chip.status-in-production {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-chip.status-processed {
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 .badge.orange {
@@ -1111,6 +1231,13 @@ tr.row-unmapped-product {
   margin: 0;
 }
 
+.modal-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .missing-centres-list {
   margin: 12px 0;
   padding-left: 20px;
@@ -1119,6 +1246,7 @@ tr.row-unmapped-product {
 }
 
 .modal-actions {
+  margin-top: 14px;
   display: flex;
   justify-content: flex-end;
   gap: 10px;

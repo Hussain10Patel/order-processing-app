@@ -1,4 +1,5 @@
 import { getStatusLabel } from "../services/api";
+import MultiDcFilter from "./MultiDcFilter";
 
 function OrdersFilters({
   search,
@@ -10,8 +11,8 @@ function OrdersFilters({
   status,
   onStatus,
   statuses,
-  distributionCentre,
-  onDistributionCentre,
+  selectedDistributionCentreIds,
+  onSelectedDistributionCentreIds,
   distributionCentres,
   fromDate,
   onFromDate,
@@ -63,20 +64,12 @@ function OrdersFilters({
         </select>
       </div>
 
-      <div>
-        <label>Distribution Centre</label>
-        <select
-          value={distributionCentre}
-          onChange={(event) => onDistributionCentre(event.target.value)}
-        >
-          <option value="All">All</option>
-          {distributionCentres.map((dc) => (
-            <option key={dc.id} value={String(dc.id)}>
-              {dc.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <MultiDcFilter
+        label="Distribution Centres"
+        distributionCentres={distributionCentres}
+        selectedIds={selectedDistributionCentreIds}
+        onChange={onSelectedDistributionCentreIds}
+      />
 
       <div>
         <label>From Date</label>
