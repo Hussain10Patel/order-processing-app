@@ -302,6 +302,24 @@ public static class SeedDataExtensions
         ", cancellationToken);
 
         await dbContext.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""ProductionDecisions"" (
+                ""Id"" serial NOT NULL,
+                ""OrderItemId"" integer NOT NULL,
+                ""IsSufficient"" boolean NOT NULL,
+                ""RequiredStock"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CurrentStock"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Difference"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""RequiredProductionQty"" numeric(18,2) NOT NULL,
+                ""RemainingStock"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Notes"" character varying(1000),
+                CONSTRAINT ""PK_ProductionDecisions"" PRIMARY KEY (""Id""),
+                CONSTRAINT ""FK_ProductionDecisions_OrderItems_OrderItemId"" FOREIGN KEY (""OrderItemId"")
+                    REFERENCES ""OrderItems"" (""Id"") ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS ""IX_ProductionDecisions_OrderItemId"" ON ""ProductionDecisions"" (""OrderItemId"");
+        ", cancellationToken);
+
+        await dbContext.Database.ExecuteSqlRawAsync(@"
             DO $$
             BEGIN
                 IF EXISTS (
