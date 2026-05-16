@@ -15,23 +15,24 @@ public class AdminController : ControllerBase
     private readonly IAdminService _adminService;
     private readonly IOrderService _orderService;
     private readonly IPricingService _pricingService;
-    private readonly IWebHostEnvironment _environment;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<AdminController> _logger;
 
-    public AdminController(AppDbContext dbContext, IAdminService adminService, IOrderService orderService, IPricingService pricingService, IWebHostEnvironment environment, ILogger<AdminController> logger)
+    public AdminController(AppDbContext dbContext, IAdminService adminService, IOrderService orderService, IPricingService pricingService, IConfiguration configuration, ILogger<AdminController> logger)
     {
         _dbContext = dbContext;
         _adminService = adminService;
         _orderService = orderService;
         _pricingService = pricingService;
-        _environment = environment;
+        _configuration = configuration;
         _logger = logger;
     }
 
     [HttpPost("reset-data")]
     public async Task<IActionResult> ResetData(CancellationToken cancellationToken)
     {
-        if (!_environment.IsDevelopment())
+        // Safety gate: disabled by default in all environments.
+        if (!_configuration.GetValue<bool>("Features:EnableResetData"))
         {
             return NotFound();
         }
