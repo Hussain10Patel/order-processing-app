@@ -38,7 +38,9 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Order>(entity =>
         {
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => x.OrderNumber).IsUnique();
+            entity.HasIndex(x => x.OrderNumber)
+                .IsUnique()
+                .HasFilter("\"IsActive\" = true");
             entity.Property(x => x.OrderNumber).HasMaxLength(50).IsRequired();
             entity.Property(x => x.Notes).HasMaxLength(1000);
             entity.Property(x => x.IsAdjusted).HasDefaultValue(false);
