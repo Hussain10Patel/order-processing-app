@@ -878,16 +878,16 @@ public class OrderService : IOrderService
         catch (DbUpdateException exception)
         {
             var innerError = exception.InnerException?.Message ?? exception.Message;
-            var postgresException = exception.InnerException as PostgresException;
+            var baseException = exception.GetBaseException();
+            var postgresException = baseException as PostgresException;
 
             if (postgresException is not null)
             {
-                _logger.LogError(
-                    exception,
-                    "[CSV IMPORT ERROR] PostgresException details. Context: {Context}. ExceptionType: {ExceptionType}. InnerExceptionType: {InnerExceptionType}. SqlState: {SqlState}. MessageText: {MessageText}. Detail: {Detail}. Hint: {Hint}. ConstraintName: {ConstraintName}. TableName: {TableName}. ColumnName: {ColumnName}. SchemaName: {SchemaName}. Where: {Where}",
-                    context,
+                Console.Error.WriteLine(
+                    "[CSV_POSTGRES_DIAGNOSTIC] ExceptionType={0} InnerExceptionType={1} BaseExceptionType={2} SqlState={3} MessageText={4} Detail={5} Hint={6} ConstraintName={7} TableName={8} ColumnName={9} SchemaName={10} Where={11}",
                     exception.GetType().FullName,
                     exception.InnerException?.GetType().FullName,
+                    baseException.GetType().FullName,
                     postgresException.SqlState,
                     postgresException.MessageText,
                     postgresException.Detail,
@@ -897,6 +897,34 @@ public class OrderService : IOrderService
                     postgresException.ColumnName,
                     postgresException.SchemaName,
                     postgresException.Where);
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "[CSV_POSTGRES_DIAGNOSTIC] BaseExceptionType={0} BaseExceptionMessage={1}",
+                    baseException.GetType().FullName,
+                    baseException.Message);
+            }
+
+            var postgresException2 = exception.InnerException as PostgresException;
+
+            if (postgresException2 is not null)
+            {
+                _logger.LogError(
+                    exception,
+                    "[CSV IMPORT ERROR] PostgresException details. Context: {Context}. ExceptionType: {ExceptionType}. InnerExceptionType: {InnerExceptionType}. SqlState: {SqlState}. MessageText: {MessageText}. Detail: {Detail}. Hint: {Hint}. ConstraintName: {ConstraintName}. TableName: {TableName}. ColumnName: {ColumnName}. SchemaName: {SchemaName}. Where: {Where}",
+                    context,
+                    exception.GetType().FullName,
+                    exception.InnerException?.GetType().FullName,
+                    postgresException2.SqlState,
+                    postgresException2.MessageText,
+                    postgresException2.Detail,
+                    postgresException2.Hint,
+                    postgresException2.ConstraintName,
+                    postgresException2.TableName,
+                    postgresException2.ColumnName,
+                    postgresException2.SchemaName,
+                    postgresException2.Where);
             }
             else
             {
