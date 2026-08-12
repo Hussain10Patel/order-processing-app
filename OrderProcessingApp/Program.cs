@@ -1,12 +1,27 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.Data;
 using OrderProcessingApp.Options;
 using OrderProcessingApp.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var jsonSources = builder.Configuration.Sources
+    .OfType<JsonConfigurationSource>()
+    .ToList();
+
+foreach (var source in jsonSources)
+{
+    builder.Configuration.Sources.Remove(source);
+}
+
+builder.Configuration
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: false);
+
 const string ReactCorsPolicy = "ReactFrontendPolicy";
 
 // Add services
