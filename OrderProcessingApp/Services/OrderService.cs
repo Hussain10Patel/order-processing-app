@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using OrderProcessingApp.Data;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Models;
@@ -877,6 +878,37 @@ public class OrderService : IOrderService
         catch (DbUpdateException exception)
         {
             var innerError = exception.InnerException?.Message ?? exception.Message;
+            var postgresException = exception.InnerException as PostgresException;
+
+            if (postgresException is not null)
+            {
+                _logger.LogError(
+                    exception,
+                    "[CSV IMPORT ERROR] PostgresException details. Context: {Context}. ExceptionType: {ExceptionType}. InnerExceptionType: {InnerExceptionType}. SqlState: {SqlState}. MessageText: {MessageText}. Detail: {Detail}. Hint: {Hint}. ConstraintName: {ConstraintName}. TableName: {TableName}. ColumnName: {ColumnName}. SchemaName: {SchemaName}. Where: {Where}",
+                    context,
+                    exception.GetType().FullName,
+                    exception.InnerException?.GetType().FullName,
+                    postgresException.SqlState,
+                    postgresException.MessageText,
+                    postgresException.Detail,
+                    postgresException.Hint,
+                    postgresException.ConstraintName,
+                    postgresException.TableName,
+                    postgresException.ColumnName,
+                    postgresException.SchemaName,
+                    postgresException.Where);
+            }
+            else
+            {
+                _logger.LogError(
+                    exception,
+                    "[CSV IMPORT ERROR] Context: {Context}. ExceptionType: {ExceptionType}. InnerExceptionType: {InnerExceptionType}. Details: {InnerError}",
+                    context,
+                    exception.GetType().FullName,
+                    exception.InnerException?.GetType().FullName,
+                    innerError);
+            }
+
             _logger.LogError(
                 exception,
                 "[CSV IMPORT ERROR] ProductId missing or FK violation. Context: {Context}. Details: {InnerError}",
