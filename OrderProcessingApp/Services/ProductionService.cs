@@ -639,7 +639,7 @@ public class ProductionService : IProductionService
     {
         var targetDate = date.Date;
         return x => x.Order != null
-            && x.Order.DeliveryDate.Date == targetDate
+            && x.Order.DeliverySchedules.Any(schedule => schedule.DeliveryDate.Date == targetDate)
             && OrderWorkflowStatusRules.ProductionDemandQueryableStatuses.Contains(x.Order.Status);
     }
 
