@@ -1310,16 +1310,13 @@ public class OrderService : IOrderService
             .Include(x => x.DistributionCentre)
             .Include(x => x.Items)
                 .ThenInclude(x => x.Product)
+            .Include(x => x.Items)
+                .ThenInclude(x => x.ProductionDecisions)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
 
         if (order is null)
         {
             return null;
-        }
-
-        if (order.Status == OrderStatus.Processed)
-        {
-            throw new InvalidOperationException("Processed orders cannot be adjusted.");
         }
 
         if (dto.Items.Count == 0)
@@ -1343,6 +1340,7 @@ public class OrderService : IOrderService
         var originalIsAdjusted = order.IsAdjusted;
         var originalTotalValue = order.TotalValue;
         var originalTotalPallets = order.TotalPallets;
+        var quantityChanged = false;
 
         if (order.DistributionCentre is null)
         {
@@ -1381,6 +1379,7 @@ public class OrderService : IOrderService
             var oldMismatch = line.IsPriceMismatch;
 
             line.Quantity = adjustment.Quantity;
+            quantityChanged |= oldQty != line.Quantity;
 
             // Safely parse the incoming price — guards against comma-decimal strings (e.g. "48,1")
             // that may survive model binding in non-invariant-culture environments.
@@ -1431,7 +1430,39 @@ public class OrderService : IOrderService
         bool hasMissing = order.Items.Any(x => x.IsPriceMissing);
         bool hasMismatch = order.Items.Any(x => x.IsPriceMismatch);
         Console.WriteLine($"[AdjustOrderAsync] OrderId={id}, HasMissing={hasMissing}, HasMismatch={hasMismatch}");
-        order.Status = (hasMissing || hasMismatch) ? OrderStatus.Flagged : OrderStatus.Validated;
+
+        if (quantityChanged)
+        {
+            var staleProductionDecisions = order.Items
+                .SelectMany(x => x.ProductionDecisions)
+                .ToList();
+
+            if (staleProductionDecisions.Count > 0)
+            {
+                _dbContext.ProductionDecisions.RemoveRange(staleProductionDecisions);
+                _logger.LogInformation(
+                    "[AdjustOrderAsync] Removed {DecisionCount} stale production decision(s) for OrderId={OrderId} after quantity change.",
+                    staleProductionDecisions.Count,
+                    order.Id);
+            }
+        }
+
+        if (hasMissing || hasMismatch)
+        {
+            order.Status = OrderStatus.Flagged;
+        }
+        else if (quantityChanged && (originalStatus == OrderStatus.InProduction || originalStatus == OrderStatus.Processed))
+        {
+            order.Status = OrderStatus.InProduction;
+        }
+        else if (!quantityChanged && (originalStatus == OrderStatus.InProduction || originalStatus == OrderStatus.Processed))
+        {
+            order.Status = originalStatus;
+        }
+        else
+        {
+            order.Status = OrderStatus.Validated;
+        }
 
         order.Notes = SafeVarchar1000(order.Notes, $"Order[{order.Id}].Notes");
         LogAdjustPreSaveStringLengths(order.Id, order.Notes);
