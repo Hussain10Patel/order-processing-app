@@ -696,6 +696,7 @@ public class ProductionService : IProductionService
                 var beforeStock = runningStock;
                 var manualOverrideApplied = false;
                 var persistedDecisionStockApplied = false;
+                decimal effectiveProduction = 0;
 
                 var existingDecision = item.ProductionDecisions?
                     .OrderByDescending(x => x.Id)
@@ -711,6 +712,9 @@ public class ProductionService : IProductionService
                 {
                     beforeStock = existingDecision.CurrentStock;
                     persistedDecisionStockApplied = true;
+                    effectiveProduction = existingDecision.IsSufficient
+                        ? 0
+                        : Math.Max(existingDecision.RequiredProductionQty, 0);
                 }
 
                 var currentStock = beforeStock;
@@ -719,8 +723,11 @@ public class ProductionService : IProductionService
                 decimal productionRequired;
                 decimal remainingStock;
 
-                difference = beforeStock - requiredStock;
-                productionRequired = difference < 0 ? Math.Abs(difference) : 0;
+                var shortageDifference = beforeStock - requiredStock;
+                productionRequired = shortageDifference < 0 ? Math.Abs(shortageDifference) : 0;
+
+                // Excel parity for closing stock: opening + production - demand.
+                difference = beforeStock + effectiveProduction - requiredStock;
                 remainingStock = difference;
 
                 // Always roll the computed closing stock forward (clamped at zero) so
