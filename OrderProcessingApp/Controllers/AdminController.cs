@@ -319,21 +319,57 @@ public class AdminController : ControllerBase
     }
 
     [HttpPost("pricelists")]
-    public async Task<ActionResult<PriceListDto>> UpsertPriceList([FromBody] PriceListUpsertDto dto, CancellationToken cancellationToken)
+    public async Task<ActionResult<object>> UpsertPriceList([FromBody] PriceListUpsertDto dto, CancellationToken cancellationToken)
     {
         try
         {
-            var (existing, _) = await _adminService.CreateOrRestorePriceListAsync(
+            var distributionCentreIds = dto.DistributionCentreIds is { Count: > 0 }
+                ? dto.DistributionCentreIds
+                : dto.DistributionCentreId.HasValue
+                    ? new List<int> { dto.DistributionCentreId.Value }
+                    : new List<int>();
+
+            if (distributionCentreIds.Count == 1)
+            {
+                var (existing, _) = await _adminService.CreateOrRestorePriceListAsync(
+                    dto.ProductId,
+                    distributionCentreIds[0],
+                    dto.Price,
+                    cancellationToken);
+
+                var output = await _dbContext.PriceLists
+                    .AsNoTracking()
+                    .Include(x => x.Product)
+                    .Include(x => x.DistributionCentre)
+                    .Where(x => x.Id == existing.Id)
+                    .Select(x => new PriceListDto
+                    {
+                        Id = x.Id,
+                        ProductId = x.ProductId,
+                        ProductName = x.Product!.Name,
+                        DistributionCentreId = x.DistributionCentreId,
+                        DistributionCentreName = x.DistributionCentre!.Name,
+                        BasePrice = x.Price,
+                        EffectivePrice = x.Price
+                    })
+                    .FirstAsync(cancellationToken);
+
+                return Ok(output);
+            }
+
+            var saved = await _adminService.ApplyPriceToDistributionCentresAsync(
                 dto.ProductId,
-                dto.DistributionCentreId,
+                distributionCentreIds,
                 dto.Price,
                 cancellationToken);
 
-            var output = await _dbContext.PriceLists
+            var ids = saved.Ids;
+            var bulkOutput = await _dbContext.PriceLists
                 .AsNoTracking()
                 .Include(x => x.Product)
                 .Include(x => x.DistributionCentre)
-                .Where(x => x.Id == existing.Id)
+                .Where(x => ids.Contains(x.Id))
+                .OrderBy(x => x.DistributionCentre!.Name)
                 .Select(x => new PriceListDto
                 {
                     Id = x.Id,
@@ -344,9 +380,22 @@ public class AdminController : ControllerBase
                     BasePrice = x.Price,
                     EffectivePrice = x.Price
                 })
-                .FirstAsync(cancellationToken);
+                .ToListAsync(cancellationToken);
 
-            return Ok(output);
+            var createdRows = bulkOutput.Where(x => saved.CreatedIds.Contains(x.Id)).ToList();
+            var restoredRows = bulkOutput.Where(x => saved.RestoredIds.Contains(x.Id)).ToList();
+            var updatedRows = bulkOutput.Where(x => saved.UpdatedIds.Contains(x.Id)).ToList();
+
+            return Ok(new
+            {
+                created = createdRows,
+                restored = restoredRows,
+                updated = updatedRows,
+                count = saved.Count,
+                createdCount = saved.CreatedCount,
+                restoredCount = saved.RestoredCount,
+                updatedCount = saved.UpdatedCount
+            });
         }
         catch (KeyNotFoundException ex)
         {
@@ -357,18 +406,20 @@ public class AdminController : ControllerBase
                     errorCode = "PRICE_LIST_PRODUCT_NOT_FOUND",
                     message = ex.Message,
                     productId = dto.ProductId,
-                    distributionCentreId = dto.DistributionCentreId
+                    distributionCentreId = dto.DistributionCentreId,
+                    distributionCentreIds = dto.DistributionCentreIds
                 });
             }
 
-            if (string.Equals(ex.Message, "Invalid distribution centre", StringComparison.Ordinal))
+            if (ex.Message.StartsWith("Invalid distribution centre", StringComparison.Ordinal))
             {
                 return NotFound(new
                 {
                     errorCode = "PRICE_LIST_DISTRIBUTION_CENTRE_NOT_FOUND",
                     message = ex.Message,
                     productId = dto.ProductId,
-                    distributionCentreId = dto.DistributionCentreId
+                    distributionCentreId = dto.DistributionCentreId,
+                    distributionCentreIds = dto.DistributionCentreIds
                 });
             }
 
@@ -377,7 +428,8 @@ public class AdminController : ControllerBase
                 errorCode = "PRICE_LIST_CREATE_BAD_REQUEST",
                 message = ex.Message,
                 productId = dto.ProductId,
-                distributionCentreId = dto.DistributionCentreId
+                distributionCentreId = dto.DistributionCentreId,
+                distributionCentreIds = dto.DistributionCentreIds
             });
         }
         catch (InvalidOperationException ex)
@@ -389,7 +441,8 @@ public class AdminController : ControllerBase
                     errorCode = "PRICE_LIST_DUPLICATE_ACTIVE",
                     message = ex.Message,
                     productId = dto.ProductId,
-                    distributionCentreId = dto.DistributionCentreId
+                    distributionCentreId = dto.DistributionCentreId,
+                    distributionCentreIds = dto.DistributionCentreIds
                 });
             }
 
@@ -398,7 +451,8 @@ public class AdminController : ControllerBase
                 errorCode = "PRICE_LIST_CREATE_INVALID_OPERATION",
                 message = ex.Message,
                 productId = dto.ProductId,
-                distributionCentreId = dto.DistributionCentreId
+                distributionCentreId = dto.DistributionCentreId,
+                distributionCentreIds = dto.DistributionCentreIds
             });
         }
     }

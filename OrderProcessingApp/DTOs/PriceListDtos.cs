@@ -25,7 +25,9 @@ public class PriceListUpsertDto
     public int ProductId { get; set; }
 
     [Range(1, int.MaxValue)]
-    public int DistributionCentreId { get; set; }
+    public int? DistributionCentreId { get; set; }
+
+    public List<int>? DistributionCentreIds { get; set; }
 
     [Range(0.01, 999999999.0)]
     public decimal Price { get; set; }
@@ -36,6 +38,18 @@ public class SystemPriceLookupDto
     public int ProductId { get; set; }
     public int DistributionCentreId { get; set; }
     public decimal Price { get; set; }
+}
+
+public class PriceListBulkApplyResult
+{
+    public int Count { get; set; }
+    public int CreatedCount { get; set; }
+    public int RestoredCount { get; set; }
+    public int UpdatedCount { get; set; }
+    public List<int> CreatedIds { get; set; } = new();
+    public List<int> RestoredIds { get; set; } = new();
+    public List<int> UpdatedIds { get; set; } = new();
+    public List<int> Ids => CreatedIds.Concat(RestoredIds).Concat(UpdatedIds).Distinct().ToList();
 }
 
 public class PricePromotionUpsertDto

@@ -141,6 +141,76 @@ public class DeliveryUnscheduleTests
         Assert.True(orderExists);
     }
 
+    [Fact]
+    public async Task ScheduledQuery_IncludesDistributionCentreId_ForClientSideDcFiltering()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 25);
+
+        var dc1Order = await fixture.AddOrderAsync(
+            orderNumber: "DC-S-100",
+            status: OrderStatus.Processed,
+            quantity: 20m,
+            price: 10m,
+            deliveryDate: deliveryDate,
+            isScheduled: true,
+            withDecision: false,
+            distributionCentreId: 1);
+
+        var dc2Order = await fixture.AddOrderAsync(
+            orderNumber: "DC-S-200",
+            status: OrderStatus.Processed,
+            quantity: 30m,
+            price: 11m,
+            deliveryDate: deliveryDate,
+            isScheduled: true,
+            withDecision: false,
+            distributionCentreId: 2);
+
+        var scheduled = await fixture.DeliveryService.GetScheduleByDateAsync(deliveryDate);
+
+        var dc1Row = Assert.Single(scheduled, x => x.OrderId == dc1Order.OrderId);
+        var dc2Row = Assert.Single(scheduled, x => x.OrderId == dc2Order.OrderId);
+
+        Assert.Equal(1, dc1Row.DistributionCentreId);
+        Assert.Equal(2, dc2Row.DistributionCentreId);
+    }
+
+    [Fact]
+    public async Task UnscheduledQuery_RetainsDistributionCentreId_ForClientSideDcFiltering()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 26);
+
+        var dc1Order = await fixture.AddOrderAsync(
+            orderNumber: "DC-U-100",
+            status: OrderStatus.Approved,
+            quantity: 25m,
+            price: 12m,
+            deliveryDate: deliveryDate,
+            isScheduled: false,
+            withDecision: false,
+            distributionCentreId: 1);
+
+        var dc2Order = await fixture.AddOrderAsync(
+            orderNumber: "DC-U-200",
+            status: OrderStatus.Approved,
+            quantity: 35m,
+            price: 13m,
+            deliveryDate: deliveryDate,
+            isScheduled: false,
+            withDecision: false,
+            distributionCentreId: 2);
+
+        var unscheduled = await fixture.DeliveryService.GetUnscheduledOrdersByDateAsync(deliveryDate);
+
+        var dc1Row = Assert.Single(unscheduled, x => x.Id == dc1Order.OrderId);
+        var dc2Row = Assert.Single(unscheduled, x => x.Id == dc2Order.OrderId);
+
+        Assert.Equal(1, dc1Row.DistributionCentreId);
+        Assert.Equal(2, dc2Row.DistributionCentreId);
+    }
+
     private sealed class TestFixture : IAsyncDisposable
     {
         private readonly DbContextOptions<AppDbContext> _options;
@@ -172,6 +242,15 @@ public class DeliveryUnscheduleTests
                 Id = 1,
                 Name = "DC 1",
                 Code = "DC1",
+                RegionId = 1,
+                IsActive = true
+            });
+
+            db.DistributionCentres.Add(new DistributionCentre
+            {
+                Id = 2,
+                Name = "DC 2",
+                Code = "DC2",
                 RegionId = 1,
                 IsActive = true
             });
@@ -209,7 +288,8 @@ public class DeliveryUnscheduleTests
             decimal price,
             DateTime deliveryDate,
             bool isScheduled,
-            bool withDecision)
+            bool withDecision,
+            int distributionCentreId = 1)
         {
             await using var db = CreateDbContext();
 
@@ -218,7 +298,7 @@ public class DeliveryUnscheduleTests
                 OrderNumber = orderNumber,
                 OrderDate = deliveryDate.AddDays(-1),
                 DeliveryDate = deliveryDate,
-                DistributionCentreId = 1,
+                DistributionCentreId = distributionCentreId,
                 Source = OrderSource.CSV,
                 Status = status,
                 TotalPallets = quantity,

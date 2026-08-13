@@ -112,6 +112,7 @@ public class DeliveryService : IDeliveryService
         {
             Id = existing.Id,
             OrderId = order.Id,
+            DistributionCentreId = order.DistributionCentreId,
             OrderNumber = order.OrderNumber,
             DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
             DeliveryDate = existing.DeliveryDate.ToString("yyyy-MM-dd"),
@@ -211,6 +212,7 @@ public class DeliveryService : IDeliveryService
                     {
                         Id = schedule.Id,
                         OrderId = schedule.OrderId,
+                        DistributionCentreId = order.DistributionCentreId,
                         OrderNumber = order.OrderNumber ?? string.Empty,
                         DistributionCentre = order.DistributionCentre?.Name ?? string.Empty,
                         DeliveryDate = schedule.DeliveryDate.ToString("yyyy-MM-dd"),

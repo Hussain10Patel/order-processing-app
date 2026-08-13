@@ -18,6 +18,7 @@ public class DeliveryScheduleDto
 {
     public int Id { get; set; }
     public int OrderId { get; set; }
+    public int DistributionCentreId { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
     public string DistributionCentre { get; set; } = string.Empty;
     public string DeliveryDate { get; set; } = string.Empty;

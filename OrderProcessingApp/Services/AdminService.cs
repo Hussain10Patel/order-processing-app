@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using OrderProcessingApp.Data;
+using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Models;
 
 namespace OrderProcessingApp.Services;
@@ -118,6 +120,126 @@ public class AdminService : IAdminService
         _dbContext.PriceLists.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (entity, false);
+    }
+
+    public async Task<PriceListBulkApplyResult> ApplyPriceToDistributionCentresAsync(int productId, IReadOnlyCollection<int> distributionCentreIds, decimal price, CancellationToken cancellationToken = default)
+    {
+        if (distributionCentreIds is null)
+        {
+            throw new ArgumentNullException(nameof(distributionCentreIds));
+        }
+
+        var uniqueDistributionCentreIds = distributionCentreIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+
+        if (uniqueDistributionCentreIds.Count == 0)
+        {
+            throw new InvalidOperationException("Please select at least one distribution centre.");
+        }
+
+        var productExists = await _dbContext.Products
+            .AsNoTracking()
+            .AnyAsync(x => x.Id == productId, cancellationToken);
+        if (!productExists)
+        {
+            throw new KeyNotFoundException("Product not found.");
+        }
+
+        var validDistributionCentreIds = await _dbContext.DistributionCentres
+            .AsNoTracking()
+            .Where(x => uniqueDistributionCentreIds.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        var invalidIds = uniqueDistributionCentreIds.Except(validDistributionCentreIds).ToList();
+        if (invalidIds.Count > 0)
+        {
+            throw new KeyNotFoundException($"Invalid distribution centre: {invalidIds[0]}");
+        }
+
+        var rows = new List<PriceList>();
+        var createdEntities = new List<PriceList>();
+        var restoredIds = new List<int>();
+        var updatedIds = new List<int>();
+        IDbContextTransaction? transaction = null;
+
+        try
+        {
+            if (_dbContext.Database.IsRelational())
+            {
+                transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            }
+
+            foreach (var distributionCentreId in uniqueDistributionCentreIds)
+            {
+                var existing = await _dbContext.PriceLists
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.ProductId == productId && x.DistributionCentreId == distributionCentreId, cancellationToken);
+
+                if (existing is not null)
+                {
+                    if (existing.IsActive)
+                    {
+                        existing.Price = price;
+                        rows.Add(existing);
+                        updatedIds.Add(existing.Id);
+                        continue;
+                    }
+
+                    existing.IsActive = true;
+                    existing.Price = price;
+                    rows.Add(existing);
+                    restoredIds.Add(existing.Id);
+                    continue;
+                }
+
+                var entity = new PriceList
+                {
+                    ProductId = productId,
+                    DistributionCentreId = distributionCentreId,
+                    Price = price,
+                    IsActive = true
+                };
+
+                _dbContext.PriceLists.Add(entity);
+                rows.Add(entity);
+                createdEntities.Add(entity);
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            var createdIds = createdEntities
+                .Where(x => x.Id > 0)
+                .Select(x => x.Id)
+                .ToList();
+
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            return new PriceListBulkApplyResult
+            {
+                Count = rows.Count,
+                CreatedCount = createdIds.Count,
+                RestoredCount = restoredIds.Count,
+                UpdatedCount = updatedIds.Count,
+                CreatedIds = createdIds,
+                RestoredIds = restoredIds,
+                UpdatedIds = updatedIds
+            };
+        }
+        catch
+        {
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+            }
+
+            throw;
+        }
     }
 
     public async Task<(DistributionCentre DistributionCentre, bool Restored)> CreateOrRestoreDistributionCentreAsync(string name, int? sourceDistributionCentreId, CancellationToken cancellationToken = default)

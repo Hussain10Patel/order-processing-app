@@ -28,66 +28,82 @@ public class PricingService : IPricingService
 
     public async Task<EffectivePriceResult> GetEffectivePriceAsync(int productId, int distributionCentreId, DateTime? asOfDate = null, CancellationToken cancellationToken = default)
     {
+        var results = await GetEffectivePricesAsync(new[] { (productId, distributionCentreId) }, asOfDate, cancellationToken);
+        return results.TryGetValue((productId, distributionCentreId), out var result)
+            ? result
+            : new EffectivePriceResult { IsFound = false, EffectivePrice = null, BasePrice = null, PromoPrice = null };
+    }
+
+    public async Task<Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>> GetEffectivePricesAsync(IEnumerable<(int ProductId, int DistributionCentreId)> keys, DateTime? asOfDate = null, CancellationToken cancellationToken = default)
+    {
+        var distinctKeys = keys.Distinct().ToList();
+        if (distinctKeys.Count == 0)
+        {
+            return new Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>();
+        }
+
         var effectiveDate = DateTime.SpecifyKind((asOfDate ?? DateTime.UtcNow).Date, DateTimeKind.Unspecified);
+        var productIds = distinctKeys.Select(x => x.ProductId).Distinct().ToList();
+        var distributionCentreIds = distinctKeys.Select(x => x.DistributionCentreId).Distinct().ToList();
 
-        var price = await _dbContext.PriceLists
+        var priceEntries = await _dbContext.PriceLists
             .AsNoTracking()
-            .Where(priceList => priceList.ProductId == productId && priceList.DistributionCentreId == distributionCentreId)
-            .Select(priceList => (decimal?)priceList.Price)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "CSV price resolution. ProductId={ProductId}, DistributionCentreId={DistributionCentreId}, BasePrice={BasePrice}",
-            productId,
-            distributionCentreId,
-            price);
-
-        var promos = await _dbContext.PricePromotions
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(promoEntry =>
-                promoEntry.ProductId == productId
-                && promoEntry.DistributionCentreId == distributionCentreId)
-            .OrderByDescending(promoEntry => promoEntry.IsActive)
-            .ThenByDescending(promoEntry => promoEntry.CreatedAt)
-            .ThenByDescending(promoEntry => promoEntry.Id)
+            .Where(priceList => productIds.Contains(priceList.ProductId) && distributionCentreIds.Contains(priceList.DistributionCentreId))
             .ToListAsync(cancellationToken);
 
-        var activePromo = promos.FirstOrDefault(promoEntry =>
-            promoEntry.IsActive
-            && promoEntry.StartDate <= effectiveDate
-            && promoEntry.EndDate >= effectiveDate);
+        var basePriceLookup = priceEntries
+            .GroupBy(x => (x.ProductId, x.DistributionCentreId))
+            .ToDictionary(x => x.Key, x => (decimal?)x.First().Price);
 
-        var latestPromo = promos.FirstOrDefault();
+        var promoEntries = await _dbContext.PricePromotions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(promoEntry => productIds.Contains(promoEntry.ProductId) && distributionCentreIds.Contains(promoEntry.DistributionCentreId))
+            .ToListAsync(cancellationToken);
 
-        _logger.LogInformation(
-            "Promo price resolution. ProductId={ProductId}, DistributionCentreId={DistributionCentreId}, AsOfDate={AsOfDate}, PromoFound={PromoFound}, PromoPrice={PromoPrice}",
-            productId,
-            distributionCentreId,
-            effectiveDate,
-            activePromo is not null,
-            activePromo?.PromoPrice);
+        var activePromoLookup = promoEntries
+            .Where(promoEntry => promoEntry.IsActive && promoEntry.StartDate <= effectiveDate && promoEntry.EndDate >= effectiveDate)
+            .GroupBy(promoEntry => (promoEntry.ProductId, promoEntry.DistributionCentreId))
+            .ToDictionary(
+                x => x.Key,
+                x => x.OrderByDescending(promoEntry => promoEntry.CreatedAt).ThenByDescending(promoEntry => promoEntry.Id).First());
 
-        var effectivePrice = activePromo?.PromoPrice ?? price;
-        _logger.LogInformation(
-            "Effective price selection. ProductId={ProductId}, DistributionCentreId={DistributionCentreId}, EffectivePrice={EffectivePrice}, Source={Source}",
-            productId,
-            distributionCentreId,
-            effectivePrice,
-            activePromo is not null ? "promo" : "base");
+        var latestPromoLookup = promoEntries
+            .GroupBy(promoEntry => (promoEntry.ProductId, promoEntry.DistributionCentreId))
+            .ToDictionary(
+                x => x.Key,
+                x => x.OrderByDescending(promoEntry => promoEntry.CreatedAt).ThenByDescending(promoEntry => promoEntry.Id).First());
 
-        return new EffectivePriceResult
+        var results = new Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>();
+        foreach (var pair in distinctKeys)
         {
-            IsFound = effectivePrice.HasValue,
-            EffectivePrice = effectivePrice,
-            BasePrice = price,
-            PromoPrice = activePromo?.PromoPrice,
-            PromoStartDate = activePromo?.StartDate,
-            PromoEndDate = activePromo?.EndDate,
-            IsPromoApplied = activePromo is not null,
-            IsPromoActive = activePromo is not null,
-            IsPromoExpired = latestPromo is not null && latestPromo.EndDate < effectiveDate
-        };
+            var price = basePriceLookup.TryGetValue(pair, out var basePrice) ? basePrice : null;
+            activePromoLookup.TryGetValue(pair, out var activePromo);
+            latestPromoLookup.TryGetValue(pair, out var latestPromo);
+            var effectivePrice = activePromo?.PromoPrice ?? price;
+
+            _logger.LogInformation(
+                "Effective price selection. ProductId={ProductId}, DistributionCentreId={DistributionCentreId}, EffectivePrice={EffectivePrice}, Source={Source}",
+                pair.ProductId,
+                pair.DistributionCentreId,
+                effectivePrice,
+                activePromo is not null ? "promo" : "base");
+
+            results[pair] = new EffectivePriceResult
+            {
+                IsFound = effectivePrice.HasValue,
+                EffectivePrice = effectivePrice,
+                BasePrice = price,
+                PromoPrice = activePromo?.PromoPrice,
+                PromoStartDate = activePromo?.StartDate,
+                PromoEndDate = activePromo?.EndDate,
+                IsPromoApplied = activePromo is not null,
+                IsPromoActive = activePromo is not null,
+                IsPromoExpired = latestPromo is not null && latestPromo.EndDate < effectiveDate
+            };
+        }
+
+        return results;
     }
 
     public async Task<List<PriceListDto>> GetPriceListsAsync(IReadOnlyCollection<int>? distributionCentreIds = null, DateTime? asOfDate = null, CancellationToken cancellationToken = default)

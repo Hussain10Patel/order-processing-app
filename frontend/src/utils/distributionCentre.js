@@ -10,7 +10,7 @@ export function getRowDistributionCentreName(row) {
 }
 
 export function getRowDistributionCentreId(row) {
-  const rawValue = row?.distributionCentreId ?? row?.dcId ?? row?.id;
+  const rawValue = row?.distributionCentreId ?? row?.dcId;
   const parsedValue = Number(rawValue);
   return Number.isFinite(parsedValue) ? parsedValue : null;
 }

@@ -41,6 +41,11 @@ function isRestoredResponse(payload) {
     return true;
   }
 
+  const restoredCount = Number(payload.restoredCount ?? 0);
+  if (Number.isFinite(restoredCount) && restoredCount > 0) {
+    return true;
+  }
+
   const message = String(payload.message ?? payload.statusMessage ?? "").toLowerCase();
   return message.includes("restored") || message.includes("reactivated");
 }
@@ -70,7 +75,7 @@ function AdminPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [productForm, setProductForm] = useState(defaultProduct);
-  const [priceListForm, setPriceListForm] = useState({ productId: "", distributionCentreId: "", price: "" });
+  const [priceListForm, setPriceListForm] = useState({ productId: "", distributionCentreIds: [], price: "" });
   const [distributionCentreName, setDistributionCentreName] = useState("");
   const [selectedPriceListDcIds, setSelectedPriceListDcIds] = useState([]);
   const [selectedPromoDcIds, setSelectedPromoDcIds] = useState([]);
@@ -279,9 +284,14 @@ function AdminPage() {
     event.preventDefault();
     setMessage("");
 
+    const normalizedDcIds = Array.isArray(priceListForm.distributionCentreIds)
+      ? [...new Set(priceListForm.distributionCentreIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))]
+      : [];
+
     const payload = {
       productId: Number(priceListForm.productId),
-      distributionCentreId: Number(priceListForm.distributionCentreId),
+      distributionCentreIds: normalizedDcIds,
+      distributionCentreId: normalizedDcIds.length === 1 ? normalizedDcIds[0] : null,
       price: Number(priceListForm.price),
     };
 
@@ -290,8 +300,8 @@ function AdminPage() {
       return;
     }
 
-    if (!payload.distributionCentreId || Number.isNaN(payload.distributionCentreId)) {
-      setMessage("Please select a valid distribution centre.");
+    if (!normalizedDcIds.length) {
+      setMessage("Please select at least one distribution centre.");
       return;
     }
 
@@ -303,18 +313,16 @@ function AdminPage() {
     setSubmitting(true);
 
     try {
-      console.log("Submitting payload:", payload);
-
       const response = await upsertPriceList(payload);
 
       if (isRestoredResponse(response)) {
         setMessage("This item already existed and has been restored");
       } else {
-        setMessage("Price list created successfully");
+        setMessage(normalizedDcIds.length > 1 ? "Price list created successfully for selected distribution centres" : "Price list created successfully");
       }
 
       setMessageType("success");
-      setPriceListForm({ productId: "", distributionCentreId: "", price: "" });
+      setPriceListForm({ productId: "", distributionCentreIds: [], price: "" });
       window.dispatchEvent(new Event("orders:refresh"));
       window.dispatchEvent(new Event("lookups:refresh"));
       await loadAdminData();
@@ -559,8 +567,11 @@ function AdminPage() {
         setDistributionCentres((current) => current.filter((item) => item.id !== deleteDialog.id));
         setPriceLists((current) => current.filter((item) => item.distributionCentreId !== deleteDialog.id));
 
-        if (String(priceListForm.distributionCentreId) === String(deleteDialog.id)) {
-          setPriceListForm((current) => ({ ...current, distributionCentreId: "" }));
+        if (Array.isArray(priceListForm.distributionCentreIds) && priceListForm.distributionCentreIds.includes(Number(deleteDialog.id))) {
+          setPriceListForm((current) => ({
+            ...current,
+            distributionCentreIds: current.distributionCentreIds.filter((value) => Number(value) !== Number(deleteDialog.id)),
+          }));
         }
 
         setMessage("Distribution centre deleted successfully");
@@ -759,24 +770,17 @@ function AdminPage() {
           </div>
 
           <div>
-            <label>Distribution Centre</label>
-            <select
-              required
-              value={priceListForm.distributionCentreId}
-              onChange={(event) =>
+            <MultiDcFilter
+              label="Distribution Centres"
+              distributionCentres={distributionCentres}
+              selectedIds={priceListForm.distributionCentreIds}
+              onChange={(value) =>
                 setPriceListForm((current) => ({
                   ...current,
-                  distributionCentreId: event.target.value,
+                  distributionCentreIds: value,
                 }))
               }
-            >
-              <option value="">Select Distribution Centre</option>
-              {distributionCentres.map((dc) => (
-                <option key={dc.id} value={dc.id}>
-                  {dc.name}
-                </option>
-              ))}
-            </select>
+            />
           </div>
 
           <div>

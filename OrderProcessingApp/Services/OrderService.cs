@@ -1028,7 +1028,14 @@ public class OrderService : IOrderService
             .OrderByDescending(x => x.OrderDate)
             .ToListAsync(cancellationToken);
 
-        return orders.Select(MapOrderToDto).ToList();
+        var pricingCache = await GetPricingCacheAsync(orders, cancellationToken);
+        var orderDtos = new List<OrderDto>(orders.Count);
+        foreach (var order in orders)
+        {
+            orderDtos.Add(await MapOrderToDtoWithLivePricingAsync(order, pricingCache, cancellationToken));
+        }
+
+        return orderDtos;
     }
 
     public async Task<List<OrderDto>> GetFilteredOrdersAsync(OrderFilterDto filter, CancellationToken cancellationToken = default)
@@ -1088,7 +1095,14 @@ public class OrderService : IOrderService
             .OrderByDescending(x => x.OrderDate)
             .ToListAsync(cancellationToken);
 
-        return orders.Select(MapOrderToDto).ToList();
+        var pricingCache = await GetPricingCacheAsync(orders, cancellationToken);
+        var orderDtos = new List<OrderDto>(orders.Count);
+        foreach (var order in orders)
+        {
+            orderDtos.Add(await MapOrderToDtoWithLivePricingAsync(order, pricingCache, cancellationToken));
+        }
+
+        return orderDtos;
     }
 
     public async Task<OrderDto?> GetOrderByIdAsync(int id, CancellationToken cancellationToken = default)
@@ -1100,10 +1114,31 @@ public class OrderService : IOrderService
                 .ThenInclude(x => x.Product)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
 
-        return order is null ? null : await MapOrderToDtoWithLivePricingAsync(order, cancellationToken);
+        if (order is null)
+        {
+            return null;
+        }
+
+        var pricingCache = await GetPricingCacheAsync(new[] { order }, cancellationToken);
+        return await MapOrderToDtoWithLivePricingAsync(order, pricingCache, cancellationToken);
     }
 
-    private async Task<OrderDto> MapOrderToDtoWithLivePricingAsync(Order order, CancellationToken cancellationToken)
+    private async Task<Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>> GetPricingCacheAsync(IEnumerable<Order> orders, CancellationToken cancellationToken)
+    {
+        var keys = orders
+            .SelectMany(order => order.Items.Select(item => (item.ProductId, order.DistributionCentreId)))
+            .Distinct()
+            .ToList();
+
+        if (keys.Count == 0)
+        {
+            return new Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>();
+        }
+
+        return await _pricingService.GetEffectivePricesAsync(keys, null, cancellationToken);
+    }
+
+    private async Task<OrderDto> MapOrderToDtoWithLivePricingAsync(Order order, Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult> pricingCache, CancellationToken cancellationToken)
     {
         Console.WriteLine($"Order {order.Id} status: {order.Status}");
 
@@ -1111,7 +1146,10 @@ public class OrderService : IOrderService
 
         foreach (var item in order.Items)
         {
-            var livePrice = await _pricingService.GetEffectivePriceAsync(item.ProductId, order.DistributionCentreId, null, cancellationToken);
+            var key = (item.ProductId, order.DistributionCentreId);
+            var livePrice = pricingCache.TryGetValue(key, out var cachedPrice)
+                ? cachedPrice
+                : await _pricingService.GetEffectivePriceAsync(item.ProductId, order.DistributionCentreId, null, cancellationToken);
             var normalizedSystemPrice = livePrice.EffectivePrice.HasValue
                 ? Math.Round(livePrice.EffectivePrice.Value, 2)
                 : (decimal?)null;

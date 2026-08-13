@@ -26,6 +26,7 @@ public interface IPricingService
 {
     Task<PriceLookupResult> GetPriceAsync(int productId, int distributionCentreId, CancellationToken cancellationToken = default);
     Task<EffectivePriceResult> GetEffectivePriceAsync(int productId, int distributionCentreId, DateTime? asOfDate = null, CancellationToken cancellationToken = default);
+    Task<Dictionary<(int ProductId, int DistributionCentreId), EffectivePriceResult>> GetEffectivePricesAsync(IEnumerable<(int ProductId, int DistributionCentreId)> keys, DateTime? asOfDate = null, CancellationToken cancellationToken = default);
     Task<List<PriceListDto>> GetPriceListsAsync(IReadOnlyCollection<int>? distributionCentreIds = null, DateTime? asOfDate = null, CancellationToken cancellationToken = default);
     Task<List<PricePromotionDto>> GetPricePromotionsAsync(DateTime? asOfDate = null, bool includeInactive = false, CancellationToken cancellationToken = default);
     Task<PricePromotionDto> UpsertPromotionAsync(PricePromotionUpsertDto dto, CancellationToken cancellationToken = default);
