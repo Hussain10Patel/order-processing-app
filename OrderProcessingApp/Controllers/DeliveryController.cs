@@ -48,6 +48,27 @@ public class DeliveryController : ControllerBase
         }
     }
 
+    [HttpDelete("schedule/{orderId:int}")]
+    public async Task<IActionResult> Unschedule(int orderId, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Delivery unschedule request received. OrderId={OrderId}", orderId);
+        try
+        {
+            var removed = await _deliveryService.UnscheduleDeliveryAsync(orderId, cancellationToken);
+            return Ok(new
+            {
+                success = true,
+                orderId,
+                removed,
+                message = removed ? "Delivery unscheduled successfully." : "Order is already unscheduled."
+            });
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message, orderId });
+        }
+    }
+
     [HttpGet]
     public async Task<ActionResult<List<DeliveryScheduleDto>>> GetByDate([FromQuery] DateTime? date, CancellationToken cancellationToken)
     {

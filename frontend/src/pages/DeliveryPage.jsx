@@ -4,7 +4,7 @@ import DataTable from "../components/DataTable";
 import MultiDcFilter from "../components/MultiDcFilter";
 import StatusLabel from "../components/StatusLabel";
 import StatusBlock from "../components/StatusBlock";
-import { formatDate, getDeliveries, getOrders, getUnscheduledDeliveries, scheduleDelivery } from "../services/api";
+import { formatDate, getDeliveries, getOrders, getUnscheduledDeliveries, scheduleDelivery, unscheduleDelivery } from "../services/api";
 import { rowMatchesSelectedDcs } from "../utils/distributionCentre";
 
 async function resolveOrderByNumber(orderNumber) {
@@ -75,6 +75,7 @@ function DeliveryPage() {
   const [message, setMessage] = useState("");
   const [warningMessage, setWarningMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [unschedulingOrderId, setUnschedulingOrderId] = useState(null);
   const [distributionCentres, setDistributionCentres] = useState([]);
   const [selectedDistributionCentreIds, setSelectedDistributionCentreIds] = useState([]);
 
@@ -213,6 +214,34 @@ function DeliveryPage() {
     }
   }
 
+  async function handleUnschedule(row) {
+    const orderId = Number(row?.orderId);
+    if (!Number.isFinite(orderId) || orderId <= 0) {
+      setMessage("Invalid order for unscheduling");
+      return;
+    }
+
+    const confirmed = window.confirm(`Unschedule order ${row.orderNumber || orderId}?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setUnschedulingOrderId(orderId);
+    setMessage("");
+    setWarningMessage("");
+
+    try {
+      const response = await unscheduleDelivery(orderId);
+      setMessage(response?.message || "Delivery unscheduled successfully");
+      await loadSchedule();
+    } catch (requestError) {
+      console.error("Unschedule failed:", requestError);
+      setMessage(requestError.message || "Failed to unschedule delivery");
+    } finally {
+      setUnschedulingOrderId(null);
+    }
+  }
+
   return (
     <section>
       <header className="page-header">
@@ -322,6 +351,22 @@ function DeliveryPage() {
               },
               { key: "totalPallets", header: "Total Pallets" },
               { key: "notes", header: "Notes", render: (row) => row.notes || "-" },
+              {
+                key: "action",
+                header: "",
+                render: (row) => (
+                  <button
+                    type="button"
+                    className="secondary table-action-button"
+                    disabled={unschedulingOrderId === row.orderId}
+                    onClick={() => {
+                      void handleUnschedule(row);
+                    }}
+                  >
+                    {unschedulingOrderId === row.orderId ? "Unscheduling..." : "Unschedule"}
+                  </button>
+                ),
+              },
             ]}
             data={filteredRows}
             rowKey="id"

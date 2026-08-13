@@ -466,6 +466,12 @@ export async function scheduleDelivery(payload) {
   });
 }
 
+export async function unscheduleDelivery(orderId) {
+  return request(`/api/delivery/schedule/${orderId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function createProduct(payload) {
   return request("/api/admin/products", {
     method: "POST",
@@ -599,6 +605,7 @@ export const api = {
   downloadReportExport,
   downloadExport,
   scheduleDelivery,
+  unscheduleDelivery,
   createProduct,
   updateProduct,
   deleteProduct,

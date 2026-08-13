@@ -123,6 +123,33 @@ public class DeliveryService : IDeliveryService
         };
     }
 
+    public async Task<bool> UnscheduleDeliveryAsync(int orderId, CancellationToken cancellationToken = default)
+    {
+        var orderExists = await _dbContext.Orders
+            .AsNoTracking()
+            .AnyAsync(x => x.Id == orderId, cancellationToken);
+
+        if (!orderExists)
+        {
+            throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
+        }
+
+        var existing = await _dbContext.DeliverySchedules
+            .FirstOrDefaultAsync(x => x.OrderId == orderId, cancellationToken);
+
+        if (existing is null)
+        {
+            _logger.LogInformation("[DELIVERY UNSCHEDULE] OrderId={OrderId} already unscheduled.", orderId);
+            return false;
+        }
+
+        _dbContext.DeliverySchedules.Remove(existing);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation("[DELIVERY UNSCHEDULE] Removed DeliveryScheduleId={DeliveryScheduleId} for OrderId={OrderId}.", existing.Id, orderId);
+        return true;
+    }
+
     public async Task<List<DeliveryScheduleDto>> GetScheduleByDateAsync(DateTime? date, CancellationToken cancellationToken = default)
     {
         var normalized = date.HasValue ? NormalizeDate(date.Value) : (DateTime?)null;
