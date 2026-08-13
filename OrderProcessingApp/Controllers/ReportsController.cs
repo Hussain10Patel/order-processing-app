@@ -38,10 +38,36 @@ public class ReportsController : ControllerBase
     }
 
     [HttpGet("summary-data")]
-    public async Task<ActionResult<ReportSummaryDto>> SummaryData([FromQuery] DateTime date, CancellationToken cancellationToken)
+    public async Task<ActionResult<ReportSummaryDto>> SummaryData(
+        [FromQuery] DateTime? date,
+        [FromQuery] DateTime? fromDate,
+        [FromQuery] DateTime? toDate,
+        CancellationToken cancellationToken)
     {
-        var result = await _reportService.GetSummaryByDeliveryDateAsync(date, cancellationToken);
-        return Ok(result);
+        // Safe precedence: range parameters override the single-date query when provided.
+        if (fromDate.HasValue || toDate.HasValue)
+        {
+            if (!fromDate.HasValue || !toDate.HasValue)
+            {
+                return BadRequest(new { message = "Both fromDate and toDate are required when requesting a date range." });
+            }
+
+            if (fromDate.Value.Date > toDate.Value.Date)
+            {
+                return BadRequest(new { message = "From date must be on or before To date." });
+            }
+
+            var result = await _reportService.GetSummaryByDeliveryDateRangeAsync(fromDate.Value, toDate.Value, cancellationToken);
+            return Ok(result);
+        }
+
+        if (!date.HasValue)
+        {
+            return BadRequest(new { message = "A date or a valid fromDate/toDate range is required." });
+        }
+
+        var singleDateResult = await _reportService.GetSummaryByDeliveryDateAsync(date.Value, cancellationToken);
+        return Ok(singleDateResult);
     }
 
     [HttpGet("summary")]

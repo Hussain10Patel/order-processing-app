@@ -64,10 +64,19 @@ public class ReportService : IReportService
 
     public async Task<ReportSummaryDto> GetSummaryByDeliveryDateAsync(DateTime date, CancellationToken cancellationToken = default)
     {
-        var selectedDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Unspecified);
-        var start = selectedDate.Date;
-        var end = start.AddDays(1);
-        Console.WriteLine($"[REPORT QUERY] Using ScheduledDate: {selectedDate:yyyy-MM-dd}");
+        return await GetSummaryByDeliveryDateRangeAsync(date, date, cancellationToken);
+    }
+
+    public async Task<ReportSummaryDto> GetSummaryByDeliveryDateRangeAsync(DateTime fromDate, DateTime toDate, CancellationToken cancellationToken = default)
+    {
+        var start = DateTime.SpecifyKind(fromDate.Date, DateTimeKind.Unspecified);
+        var endDateInclusive = DateTime.SpecifyKind(toDate.Date, DateTimeKind.Unspecified);
+        if (start > endDateInclusive)
+        {
+            throw new ArgumentOutOfRangeException(nameof(fromDate), "From date must be on or before To date.");
+        }
+
+        var end = endDateInclusive.AddDays(1);
 
         var orders = await _dbContext.Orders
             .AsNoTracking()
@@ -78,11 +87,12 @@ public class ReportService : IReportService
             .ToListAsync(cancellationToken);
 
         var orderIds = orders.Select(x => x.Id).ToList();
-        var schedulesByOrder = await _dbContext.DeliverySchedules
+        var schedulesByOrder = (await _dbContext.DeliverySchedules
             .AsNoTracking()
             .Where(x => orderIds.Contains(x.OrderId) && x.DeliveryDate >= start && x.DeliveryDate < end)
+            .ToListAsync(cancellationToken))
             .GroupBy(x => x.OrderId)
-            .ToDictionaryAsync(x => x.Key, x => x.Select(ds => ds.Status).ToList(), cancellationToken);
+            .ToDictionary(x => x.Key, x => x.Select(ds => ds.Status).ToList());
 
         var planQtyByProduct = await _dbContext.ProductionPlans
             .AsNoTracking()

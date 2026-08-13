@@ -45,13 +45,17 @@ function isReportEmpty(report) {
 
 function ReportsPage() {
   const [date, setDate] = useState(getToday());
+  const [fromDate, setFromDate] = useState(getToday());
+  const [toDate, setToDate] = useState(getToday());
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rangeError, setRangeError] = useState("");
   const [exporting, setExporting] = useState("");
   const [exportError, setExportError] = useState("");
   const [selectedDistributionCentreIds, setSelectedDistributionCentreIds] = useState([]);
   const [reportDates, setReportDates] = useState([]);
+  const [reportMode, setReportMode] = useState("single");
 
   useEffect(() => {
     async function loadReportDates() {
@@ -66,9 +70,14 @@ function ReportsPage() {
   }, []);
 
   useEffect(() => {
+    if (reportMode !== "single") {
+      return;
+    }
+
     async function loadReports() {
       setLoading(true);
       setError("");
+      setRangeError("");
 
       try {
         const formattedDate = toYMD(date);
@@ -84,11 +93,11 @@ function ReportsPage() {
     }
 
     void loadReports();
-  }, [date]);
+  }, [date, reportMode]);
 
   useEffect(() => {
     setSelectedDistributionCentreIds([]);
-  }, [date]);
+  }, [date, fromDate, toDate, reportMode]);
 
   const ordersByStatus = Array.isArray(report?.ordersByStatus) ? report.ordersByStatus : [];
   const salesByProduct = Array.isArray(report?.salesByProduct) ? report.salesByProduct : [];
@@ -121,6 +130,34 @@ function ReportsPage() {
     });
   }, [deliverySummary, selectedDistributionCentreIds, deliveryCentres]);
 
+  async function handleGenerateRangeReport() {
+    if (!fromDate || !toDate) {
+      setRangeError("Please choose both a From Date and a To Date.");
+      return;
+    }
+
+    if (new Date(fromDate) > new Date(toDate)) {
+      setRangeError("From Date must be on or before To Date.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setRangeError("");
+    setReportMode("range");
+
+    try {
+      const response = await getReportSummary(null, fromDate, toDate);
+      setReport(response);
+    } catch (requestError) {
+      console.error("Failed to load range report:", requestError);
+      setError(requestError.message || "Unable to load the selected date range");
+      setReport(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleExport(type) {
     setExporting(type);
     setExportError("");
@@ -152,7 +189,10 @@ function ReportsPage() {
                 <label>Available Dates</label>
                 <select
                   value={date}
-                  onChange={(event) => setDate(event.target.value)}
+                  onChange={(event) => {
+                    setReportMode("single");
+                    setDate(event.target.value);
+                  }}
                 >
                   <option value="">— select a date —</option>
                   {reportDates.map((entry) => (
@@ -179,13 +219,36 @@ function ReportsPage() {
         </div>
 
         {exportError && <p className="alert error">{exportError}</p>}
+        {rangeError && <p className="alert error">{rangeError}</p>}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginTop: 16 }}>
+          <div style={{ minWidth: 180 }}>
+            <label>From Date</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(event) => setFromDate(event.target.value)}
+            />
+          </div>
+          <div style={{ minWidth: 180 }}>
+            <label>To Date</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(event) => setToDate(event.target.value)}
+            />
+          </div>
+          <button type="button" onClick={handleGenerateRangeReport}>
+            Generate Range Report
+          </button>
+        </div>
 
         <StatusBlock
           loading={loading}
           error={error}
           empty={!loading && !error && isReportEmpty(report)}
           loadingText="Loading reports..."
-          emptyText="No report data found for this date."
+          emptyText={reportMode === "range" ? "No report data found for this date range." : "No report data found for this date."}
           spinner
         />
       </div>

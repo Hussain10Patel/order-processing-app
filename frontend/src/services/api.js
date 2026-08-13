@@ -395,8 +395,12 @@ export async function getReportDates() {
   return request("/api/reports/available-dates", { method: "GET" });
 }
 
-export async function getReportSummary(date = getToday()) {
-  return request(`/api/reports/summary-data${toQueryString({ date })}`, { method: "GET" });
+export async function getReportSummary(date = getToday(), fromDate = null, toDate = null) {
+  const params = fromDate && toDate
+    ? { fromDate, toDate }
+    : { date: date ?? getToday() };
+
+  return request(`/api/reports/summary-data${toQueryString(params)}`, { method: "GET" });
 }
 
 function getDownloadFileName(contentDisposition, fallback) {
