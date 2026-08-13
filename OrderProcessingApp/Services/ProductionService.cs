@@ -723,11 +723,9 @@ public class ProductionService : IProductionService
                 productionRequired = difference < 0 ? Math.Abs(difference) : 0;
                 remainingStock = difference;
 
-                if (!manualOverrideApplied && !persistedDecisionStockApplied)
-                {
-                    // Cascade only when no explicit per-line stock is supplied/stored.
-                    runningStock = Math.Max(remainingStock, 0);
-                }
+                // Always roll the computed closing stock forward (clamped at zero) so
+                // manual and persisted per-line openings still establish the next default.
+                runningStock = Math.Max(remainingStock, 0);
 
                 Console.WriteLine($"[STOCK CASCADE] ProductId: {productId}, Before: {beforeStock}, After: {runningStock}");
                 _logger.LogInformation(
