@@ -359,6 +359,15 @@ function ProductionPage() {
     }
   }
 
+  function handlePrimaryOrderAction(order) {
+    if (isOrderProcessed(order)) {
+      toggleOrder(order.orderId);
+      return;
+    }
+
+    void processOrder(order);
+  }
+
   return (
     <section>
       <header className="page-header">
@@ -547,11 +556,9 @@ function ProductionPage() {
                     <button
                       type="button"
                       disabled={disableProcess}
-                      onClick={() => {
-                        void processOrder(order);
-                      }}
+                      onClick={() => handlePrimaryOrderAction(order)}
                     >
-                      {processed ? "Reprocess Order" : "Process Order"}
+                      {processed ? "Edit Order" : "Process Order"}
                     </button>
                   </div>
                 </div>
