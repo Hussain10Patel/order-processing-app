@@ -503,6 +503,13 @@ export async function upsertPriceList(payload) {
   });
 }
 
+export async function updatePriceList(id, payload) {
+  return request(`/api/admin/pricelists/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getPricePromotions() {
   return request("/api/admin/price-promotions");
 }

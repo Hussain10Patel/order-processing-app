@@ -8,6 +8,7 @@ public interface IAdminService
     Task ResetDataAsync(CancellationToken cancellationToken = default);
     Task<(Product Product, bool Restored)> CreateOrRestoreProductAsync(string name, string skuCode, decimal palletConversionRate, CancellationToken cancellationToken = default);
     Task<(PriceList PriceList, bool Restored)> CreateOrRestorePriceListAsync(int productId, int distributionCentreId, decimal price, CancellationToken cancellationToken = default);
+    Task<PriceList> UpdatePriceListAsync(int id, decimal price, CancellationToken cancellationToken = default);
     Task<PriceListBulkApplyResult> ApplyPriceToDistributionCentresAsync(int productId, IReadOnlyCollection<int> distributionCentreIds, decimal price, CancellationToken cancellationToken = default);
     Task<(DistributionCentre DistributionCentre, bool Restored)> CreateOrRestoreDistributionCentreAsync(string name, int? sourceDistributionCentreId, CancellationToken cancellationToken = default);
     Task<bool> SoftDeleteProductAsync(int id, CancellationToken cancellationToken = default);

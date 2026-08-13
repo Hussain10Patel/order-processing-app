@@ -10,6 +10,40 @@ namespace OrderProcessingApp.Tests;
 public class PriceListBulkSaveTests
 {
     [Fact]
+    public async Task UpdatePriceListAsync_UpdatesSingleRowPriceWithoutCreatingDuplicate()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+
+        var product = await fixture.CreateProductAsync("Product Edit", "SKU-EDIT");
+        var dc = await fixture.CreateDistributionCentreAsync("DC Edit");
+        await fixture.CreatePriceListAsync(product.Id, dc.Id, 10.00m);
+
+        var service = fixture.CreateAdminService();
+        var first = await dbPriceListAsync(fixture, product.Id, dc.Id);
+        var updated = await service.UpdatePriceListAsync(first.Id, 18.50m, CancellationToken.None);
+
+        Assert.Equal(18.50m, updated.Price);
+        Assert.Equal(product.Id, updated.ProductId);
+        Assert.Equal(dc.Id, updated.DistributionCentreId);
+
+        await using var db = new AppDbContext(fixture.Options);
+        var rows = await db.PriceLists.Where(x => x.ProductId == product.Id && x.DistributionCentreId == dc.Id).ToListAsync();
+
+        Assert.Single(rows);
+        Assert.Equal(18.50m, rows[0].Price);
+    }
+
+    [Fact]
+    public async Task UpdatePriceListAsync_ThrowsWhenRowDoesNotExist()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+
+        var service = fixture.CreateAdminService();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => service.UpdatePriceListAsync(9999, 12.00m, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ApplyPriceToDistributionCentresAsync_OneProductOneDcStillWorks()
     {
         await using var fixture = await TestFixture.CreateAsync();
@@ -215,6 +249,12 @@ public class PriceListBulkSaveTests
         Assert.True(south.IsFound);
         Assert.Equal(13.00m, north.EffectivePrice);
         Assert.Equal(13.00m, south.EffectivePrice);
+    }
+
+    private static async Task<PriceList> dbPriceListAsync(TestFixture fixture, int productId, int distributionCentreId)
+    {
+        await using var db = new AppDbContext(fixture.Options);
+        return await db.PriceLists.FirstAsync(x => x.ProductId == productId && x.DistributionCentreId == distributionCentreId);
     }
 
     private sealed class TestFixture : IAsyncDisposable

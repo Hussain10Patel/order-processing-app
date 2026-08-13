@@ -19,6 +19,7 @@ import {
   getPricePromotions,
   getProducts,
   resetTestData,
+  updatePriceList,
   updatePricePromotion,
   upsertPricePromotion,
   upsertPriceList,
@@ -75,7 +76,7 @@ function AdminPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [productForm, setProductForm] = useState(defaultProduct);
-  const [priceListForm, setPriceListForm] = useState({ productId: "", distributionCentreIds: [], price: "" });
+  const [priceListForm, setPriceListForm] = useState({ id: null, productId: "", distributionCentreIds: [], price: "" });
   const [distributionCentreName, setDistributionCentreName] = useState("");
   const [selectedPriceListDcIds, setSelectedPriceListDcIds] = useState([]);
   const [selectedPromoDcIds, setSelectedPromoDcIds] = useState([]);
@@ -167,6 +168,10 @@ function AdminPage() {
     return ids
       .map((id) => distributionCentres.find((centre) => Number(centre.id) === Number(id))?.name)
       .filter(Boolean);
+  }
+
+  function clearPriceListForm() {
+    setPriceListForm({ id: null, productId: "", distributionCentreIds: [], price: "" });
   }
 
   function clearPromoForm() {
@@ -313,16 +318,22 @@ function AdminPage() {
     setSubmitting(true);
 
     try {
-      const response = await upsertPriceList(payload);
-
-      if (isRestoredResponse(response)) {
-        setMessage("This item already existed and has been restored");
+      let response;
+      if (priceListForm.id) {
+        response = await updatePriceList(priceListForm.id, payload);
+        setMessage("Price list updated successfully");
       } else {
-        setMessage(normalizedDcIds.length > 1 ? "Price list created successfully for selected distribution centres" : "Price list created successfully");
+        response = await upsertPriceList(payload);
+
+        if (isRestoredResponse(response)) {
+          setMessage("This item already existed and has been restored");
+        } else {
+          setMessage(normalizedDcIds.length > 1 ? "Price list created successfully for selected distribution centres" : "Price list created successfully");
+        }
       }
 
       setMessageType("success");
-      setPriceListForm({ productId: "", distributionCentreIds: [], price: "" });
+      clearPriceListForm();
       window.dispatchEvent(new Event("orders:refresh"));
       window.dispatchEvent(new Event("lookups:refresh"));
       await loadAdminData();
@@ -797,10 +808,15 @@ function AdminPage() {
             />
           </div>
 
-          <div style={{ display: "flex", alignItems: "end" }}>
+          <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
             <button type="submit" disabled={submitting}>
-              {submitting ? "Saving..." : "Save Price List"}
+              {submitting ? "Saving..." : priceListForm.id ? "Update Price List" : "Save Price List"}
             </button>
+            {priceListForm.id && (
+              <button type="button" className="secondary" onClick={clearPriceListForm}>
+                Cancel edit
+              </button>
+            )}
           </div>
         </form>
 
@@ -832,20 +848,36 @@ function AdminPage() {
                 key: "actions",
                 header: "Actions",
                 render: (row) => (
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() =>
-                      openDeleteDialog({
-                        type: "pricelist",
-                        id: row.id,
-                        title: "Delete Price List",
-                        message: `Are you sure you want to delete this? (${row.productName} @ ${row.distributionCentreName})`,
-                      })
-                    }
-                  >
-                    Delete
-                  </button>
+                  <div className="action-row">
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() =>
+                        setPriceListForm({
+                          id: row.id,
+                          productId: row.productId,
+                          distributionCentreIds: [Number(row.distributionCentreId)],
+                          price: row.basePrice,
+                        })
+                      }
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        openDeleteDialog({
+                          type: "pricelist",
+                          id: row.id,
+                          title: "Delete Price List",
+                          message: `Are you sure you want to delete this? (${row.productName} @ ${row.distributionCentreName})`,
+                        })
+                      }
+                    >
+                      Delete
+                    </button>
+                  </div>
                 ),
               },
             ]}

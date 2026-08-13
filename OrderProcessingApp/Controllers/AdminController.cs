@@ -318,6 +318,46 @@ public class AdminController : ControllerBase
         return NoContent();
     }
 
+    [HttpPut("pricelists/{id:int}")]
+    public async Task<ActionResult<PriceListDto>> UpdatePriceList(int id, [FromBody] PriceListUpsertDto dto, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var updated = await _adminService.UpdatePriceListAsync(id, dto.Price, cancellationToken);
+
+            var output = await _dbContext.PriceLists
+                .AsNoTracking()
+                .Include(x => x.Product)
+                .Include(x => x.DistributionCentre)
+                .Where(x => x.Id == updated.Id)
+                .Select(x => new PriceListDto
+                {
+                    Id = x.Id,
+                    ProductId = x.ProductId,
+                    ProductName = x.Product!.Name,
+                    DistributionCentreId = x.DistributionCentreId,
+                    DistributionCentreName = x.DistributionCentre!.Name,
+                    BasePrice = x.Price,
+                    EffectivePrice = x.Price
+                })
+                .FirstAsync(cancellationToken);
+
+            return Ok(output);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new
+            {
+                errorCode = "PRICE_LIST_NOT_FOUND",
+                message = ex.Message,
+                priceListId = id,
+                productId = dto.ProductId,
+                distributionCentreId = dto.DistributionCentreId,
+                distributionCentreIds = dto.DistributionCentreIds
+            });
+        }
+    }
+
     [HttpPost("pricelists")]
     public async Task<ActionResult<object>> UpsertPriceList([FromBody] PriceListUpsertDto dto, CancellationToken cancellationToken)
     {

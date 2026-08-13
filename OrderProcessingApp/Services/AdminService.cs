@@ -122,6 +122,24 @@ public class AdminService : IAdminService
         return (entity, false);
     }
 
+    public async Task<PriceList> UpdatePriceListAsync(int id, decimal price, CancellationToken cancellationToken = default)
+    {
+        var entity = await _dbContext.PriceLists
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+        if (entity is null)
+        {
+            throw new KeyNotFoundException("Price list not found.");
+        }
+
+        entity.Price = price;
+        entity.IsActive = true;
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return entity;
+    }
+
     public async Task<PriceListBulkApplyResult> ApplyPriceToDistributionCentresAsync(int productId, IReadOnlyCollection<int> distributionCentreIds, decimal price, CancellationToken cancellationToken = default)
     {
         if (distributionCentreIds is null)
