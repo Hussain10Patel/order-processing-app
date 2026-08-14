@@ -603,6 +603,8 @@ public class ProductionService : IProductionService
             .ToListAsync(cancellationToken);
 
         var calendarByDate = new Dictionary<string, ProductionCalendarDayDto>();
+        var productionSnapshotByItemId = await BuildProductionSnapshotAsync(orders, null, cancellationToken);
+
         foreach (var order in orders)
         {
             if (order.DistributionCentreId <= 0 || order.DistributionCentre is null)
@@ -635,6 +637,9 @@ public class ProductionService : IProductionService
                 var decision = item.ProductionDecisions
                     .OrderByDescending(x => x.Id)
                     .FirstOrDefault();
+                var liveSnapshot = productionSnapshotByItemId.TryGetValue(item.Id, out var calculated)
+                    ? calculated
+                    : null;
 
                 var calendarItem = new ProductionCalendarItemDto
                 {
@@ -653,7 +658,12 @@ public class ProductionService : IProductionService
                     IsProcessed = order.Status == OrderStatus.Processed,
                     HasProductionDecision = decision is not null,
                     DecisionIsSufficient = decision?.IsSufficient,
-                    RequiredProductionQty = decision?.RequiredProductionQty
+                    RequiredProductionQty = decision?.RequiredProductionQty,
+                    HasCurrentProductionCalculation = liveSnapshot is not null,
+                    CurrentRequiredProductionQty = liveSnapshot?.ComputedProductionRequired ?? 0,
+                    CurrentRemainingStock = liveSnapshot?.RemainingStock ?? 0,
+                    CurrentStock = liveSnapshot?.CurrentStock ?? 0,
+                    CurrentRequiredStock = liveSnapshot?.RequiredStock ?? item.Quantity
                 };
 
                 if (isScheduled)

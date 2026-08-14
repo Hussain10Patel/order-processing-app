@@ -105,6 +105,11 @@ public class ProductionCalendarItemDto
     public bool HasProductionDecision { get; set; }
     public bool? DecisionIsSufficient { get; set; }
     public decimal? RequiredProductionQty { get; set; }
+    public bool HasCurrentProductionCalculation { get; set; }
+    public decimal CurrentRequiredProductionQty { get; set; }
+    public decimal CurrentRemainingStock { get; set; }
+    public decimal CurrentStock { get; set; }
+    public decimal CurrentRequiredStock { get; set; }
 }
 
 public class ProductionCalendarDayDto

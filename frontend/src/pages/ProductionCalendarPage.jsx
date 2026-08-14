@@ -63,19 +63,15 @@ function formatNumber(value) {
 }
 
 function getDecisionLabel(item) {
-  if (item.decisionIsSufficient === true) {
-    return "Sufficient";
+  if (item.hasCurrentProductionCalculation === false) {
+    return "No decision";
   }
 
-  if (item.decisionIsSufficient === false) {
+  if (Number(item.currentRequiredProductionQty ?? 0) > 0) {
     return "Requires production";
   }
 
-  if (item.requiredProductionQty != null && Number(item.requiredProductionQty) > 0) {
-    return "Requires production";
-  }
-
-  return "No decision";
+  return "No production required";
 }
 
 function ProductionCalendarPage() {
@@ -304,10 +300,10 @@ function ProductionCalendarPage() {
                             <span>{formatNumber(item.quantity)} pcs</span>
                             {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
                           </div>
-                          {item.requiredProductionQty != null && (
-                            <div className="production-item-note">Required production: {formatNumber(item.requiredProductionQty)}</div>
+                          {item.hasCurrentProductionCalculation && (
+                            <div className="production-item-note">Required production: {formatNumber(item.currentRequiredProductionQty)}</div>
                           )}
-                          {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
+                          {(item.hasCurrentProductionCalculation || item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined) && (
                             <div className="production-item-note">
                               Production decision: {getDecisionLabel(item)}
                             </div>
@@ -333,10 +329,10 @@ function ProductionCalendarPage() {
                             <span>{formatNumber(item.quantity)} pcs</span>
                             {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
                           </div>
-                          {item.requiredProductionQty != null && (
-                            <div className="production-item-note">Required production: {formatNumber(item.requiredProductionQty)}</div>
+                          {item.hasCurrentProductionCalculation && (
+                            <div className="production-item-note">Required production: {formatNumber(item.currentRequiredProductionQty)}</div>
                           )}
-                          {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
+                          {(item.hasCurrentProductionCalculation || item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined) && (
                             <div className="production-item-note">
                               Production decision: {getDecisionLabel(item)}
                             </div>

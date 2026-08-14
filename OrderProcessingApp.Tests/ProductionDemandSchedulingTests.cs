@@ -209,6 +209,60 @@ public class ProductionDemandSchedulingTests
         Assert.Equal(1, day.ScheduledItems.Count);
     }
 
+    [Fact]
+    public async Task GetCalendarAsync_UsesCurrentLiveRequirement_WhenStockIsSufficient()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var date = new DateTime(2026, 3, 10);
+
+        var orderId = await fixture.AddOrderAsync("CAL-10", OrderStatus.Approved, 448m, date, isScheduled: true);
+        await fixture.AddProductionDecisionAsync(orderId, false, 500m, 0m, 448m, 52m);
+
+        var service = fixture.CreateService();
+        var day = (await service.GetCalendarAsync(date, date)).Single();
+        var item = day.ScheduledItems.Single();
+
+        Assert.Equal(0m, item.CurrentRequiredProductionQty);
+        Assert.Equal(52m, item.CurrentRemainingStock);
+        Assert.True(item.HasCurrentProductionCalculation);
+    }
+
+    [Fact]
+    public async Task GetCalendarAsync_UsesCurrentLiveRequirement_WhenShortageExists()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var date = new DateTime(2026, 3, 10);
+
+        var orderId = await fixture.AddOrderAsync("CAL-11", OrderStatus.Approved, 60m, date, isScheduled: true);
+        await fixture.AddProductionDecisionAsync(orderId, false, 0m, 60m, 60m, 0m);
+
+        var service = fixture.CreateService();
+        var day = (await service.GetCalendarAsync(date, date)).Single();
+        var item = day.ScheduledItems.Single();
+
+        Assert.Equal(60m, item.CurrentRequiredProductionQty);
+        Assert.Equal(0m, item.CurrentRemainingStock);
+        Assert.True(item.HasCurrentProductionCalculation);
+    }
+
+    [Fact]
+    public async Task GetCalendarAsync_UsesCurrentLiveRequirement_WhenPersistedDecisionIsStale()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var date = new DateTime(2026, 3, 10);
+
+        var orderId = await fixture.AddOrderAsync("CAL-12", OrderStatus.Approved, 448m, date, isScheduled: true);
+        await fixture.AddProductionDecisionAsync(orderId, false, 500m, 0m, 448m, 52m);
+
+        var service = fixture.CreateService();
+        var day = (await service.GetCalendarAsync(date, date)).Single();
+        var item = day.ScheduledItems.Single();
+
+        Assert.Equal(0m, item.CurrentRequiredProductionQty);
+        Assert.NotEqual(0m, item.CurrentRemainingStock);
+        Assert.True(item.CurrentRemainingStock > 0m);
+    }
+
     private sealed class TestFixture : IAsyncDisposable
     {
         private readonly DbContextOptions<AppDbContext> _options;
@@ -309,6 +363,28 @@ public class ProductionDemandSchedulingTests
                 DeliveryDate = date,
                 Status = "Scheduled"
             });
+            await db.SaveChangesAsync();
+        }
+
+        public async Task AddProductionDecisionAsync(int orderId, bool isSufficient, decimal currentStock, decimal requiredProductionQty, decimal requiredStock, decimal remainingStock)
+        {
+            await using var db = new AppDbContext(_options);
+            var item = await db.OrderItems
+                .Include(x => x.Order)
+                .SingleAsync(x => x.OrderId == orderId);
+
+            db.ProductionDecisions.Add(new ProductionDecision
+            {
+                OrderItemId = item.Id,
+                IsSufficient = isSufficient,
+                CurrentStock = currentStock,
+                RequiredProductionQty = requiredProductionQty,
+                RequiredStock = requiredStock,
+                RemainingStock = remainingStock,
+                Difference = remainingStock,
+                Notes = "stale-test-decision"
+            });
+
             await db.SaveChangesAsync();
         }
 
