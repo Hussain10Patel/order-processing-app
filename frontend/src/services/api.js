@@ -351,6 +351,16 @@ export async function getProductionPlans(date = getToday()) {
   return request(`/api/production/plans${query}`, { method: "GET" });
 }
 
+export async function getProductionCalendar(fromDate, toDate) {
+  if (!fromDate || !toDate) {
+    return [];
+  }
+
+  return request(`/api/production/calendar${toQueryString({ fromDate, toDate })}`, {
+    method: "GET",
+  });
+}
+
 export async function saveProductionDecision(payload) {
   return request("/api/production/decision", {
     method: "POST",

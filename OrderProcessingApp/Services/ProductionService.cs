@@ -583,6 +583,105 @@ public class ProductionService : IProductionService
         return output;
     }
 
+    public async Task<List<ProductionCalendarDayDto>> GetCalendarAsync(DateTime fromDate, DateTime toDate, CancellationToken cancellationToken = default)
+    {
+        var startDate = ToDbDate(fromDate);
+        var endDate = ToDbDate(toDate);
+
+        var orders = await _dbContext.Orders
+            .AsNoTracking()
+            .Where(x => OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(x.Status))
+            .Where(x => x.DeliveryDate.Date >= startDate.Date && x.DeliveryDate.Date <= endDate.Date)
+            .Include(x => x.DistributionCentre)
+            .Include(x => x.Items)
+                .ThenInclude(x => x.Product)
+            .Include(x => x.Items)
+                .ThenInclude(x => x.ProductionDecisions)
+            .Include(x => x.DeliverySchedules)
+            .OrderBy(x => x.DeliveryDate)
+            .ThenBy(x => x.OrderNumber)
+            .ToListAsync(cancellationToken);
+
+        var calendarByDate = new Dictionary<string, ProductionCalendarDayDto>();
+        foreach (var order in orders)
+        {
+            if (order.DistributionCentreId <= 0 || order.DistributionCentre is null)
+            {
+                continue;
+            }
+
+            var orderDateKey = ToDbDate(order.DeliveryDate).ToString("yyyy-MM-dd");
+            if (!calendarByDate.TryGetValue(orderDateKey, out var dayDto))
+            {
+                dayDto = new ProductionCalendarDayDto
+                {
+                    Date = orderDateKey,
+                    ScheduledItems = new List<ProductionCalendarItemDto>(),
+                    UnscheduledItems = new List<ProductionCalendarItemDto>()
+                };
+                calendarByDate[orderDateKey] = dayDto;
+            }
+
+            var schedule = order.DeliverySchedules
+                .OrderByDescending(x => x.DeliveryDate)
+                .FirstOrDefault();
+
+            var isScheduled = schedule is not null;
+            var scheduleStatus = isScheduled ? (string.IsNullOrWhiteSpace(schedule.Status) ? "Scheduled" : schedule.Status) : "Unscheduled";
+
+            foreach (var item in order.Items)
+            {
+                var productName = item.ProductName ?? item.Product?.Name ?? "Unknown product";
+                var decision = item.ProductionDecisions
+                    .OrderByDescending(x => x.Id)
+                    .FirstOrDefault();
+
+                var calendarItem = new ProductionCalendarItemDto
+                {
+                    OrderId = order.Id,
+                    OrderItemId = item.Id,
+                    OrderNumber = order.OrderNumber,
+                    ProductId = item.ProductId,
+                    ProductName = productName,
+                    Quantity = item.Quantity,
+                    Pallets = item.Pallets,
+                    DistributionCentreId = order.DistributionCentreId,
+                    DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
+                    Status = order.Status.ToString(),
+                    ScheduleStatus = scheduleStatus,
+                    IsScheduled = isScheduled,
+                    IsProcessed = order.Status == OrderStatus.Processed,
+                    HasProductionDecision = decision is not null,
+                    DecisionIsSufficient = decision?.IsSufficient,
+                    RequiredProductionQty = decision?.RequiredProductionQty
+                };
+
+                if (isScheduled)
+                {
+                    dayDto.ScheduledItems.Add(calendarItem);
+                }
+                else
+                {
+                    dayDto.UnscheduledItems.Add(calendarItem);
+                }
+            }
+        }
+
+        var orderedDates = Enumerable.Range(0, (endDate - startDate).Days + 1)
+            .Select(offset => startDate.AddDays(offset))
+            .Select(date => date.ToString("yyyy-MM-dd"))
+            .ToList();
+
+        return orderedDates
+            .Select(dateKey => calendarByDate.TryGetValue(dateKey, out var day) ? day : new ProductionCalendarDayDto
+            {
+                Date = dateKey,
+                ScheduledItems = new List<ProductionCalendarItemDto>(),
+                UnscheduledItems = new List<ProductionCalendarItemDto>()
+            })
+            .ToList();
+    }
+
     public async Task<List<StockCheckDto>> CheckStockAsync(DateTime date, CancellationToken cancellationToken = default)
     {
         var planDate = ToDbDate(date);

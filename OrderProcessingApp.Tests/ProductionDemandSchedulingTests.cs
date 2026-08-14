@@ -151,6 +151,64 @@ public class ProductionDemandSchedulingTests
         Assert.Equal(150m, demand);
     }
 
+    [Fact]
+    public async Task GetCalendarAsync_SeparatesScheduledAndUnscheduledOrders()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var fromDate = new DateTime(2026, 3, 10);
+        var toDate = new DateTime(2026, 3, 12);
+
+        var scheduledOrderId = await fixture.AddOrderAsync("CAL-1", OrderStatus.Approved, 100, fromDate, isScheduled: true);
+        var unscheduledOrderId = await fixture.AddOrderAsync("CAL-2", OrderStatus.InProduction, 80, fromDate, isScheduled: false);
+        await fixture.AddOrderAsync("CAL-3", OrderStatus.Approved, 120, fromDate.AddDays(2), isScheduled: false);
+
+        var service = fixture.CreateService();
+        var day = (await service.GetCalendarAsync(fromDate, toDate)).Single(x => x.Date == fromDate.ToString("yyyy-MM-dd"));
+
+        Assert.Equal(1, day.ScheduledItems.Count(x => x.OrderId == scheduledOrderId));
+        Assert.Equal(1, day.UnscheduledItems.Count(x => x.OrderId == unscheduledOrderId));
+        Assert.Equal("Scheduled", day.ScheduledItems.Single(x => x.OrderId == scheduledOrderId).ScheduleStatus);
+        Assert.Equal("Unscheduled", day.UnscheduledItems.Single(x => x.OrderId == unscheduledOrderId).ScheduleStatus);
+    }
+
+    [Fact]
+    public async Task GetCalendarAsync_IncludesDateRangeBoundariesAndExcludesOutsideRange()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var fromDate = new DateTime(2026, 3, 10);
+        var toDate = new DateTime(2026, 3, 11);
+
+        await fixture.AddOrderAsync("CAL-4", OrderStatus.Approved, 50, fromDate, isScheduled: true);
+        await fixture.AddOrderAsync("CAL-5", OrderStatus.Processed, 60, toDate, isScheduled: false);
+        await fixture.AddOrderAsync("CAL-6", OrderStatus.Approved, 70, toDate.AddDays(2), isScheduled: true);
+
+        var service = fixture.CreateService();
+        var days = await service.GetCalendarAsync(fromDate, toDate);
+
+        Assert.Contains(days, x => x.Date == fromDate.ToString("yyyy-MM-dd"));
+        Assert.Contains(days, x => x.Date == toDate.ToString("yyyy-MM-dd"));
+        Assert.DoesNotContain(days, x => x.Date == toDate.AddDays(2).ToString("yyyy-MM-dd"));
+    }
+
+    [Fact]
+    public async Task GetCalendarAsync_MixedScheduledAndUnscheduledOrdersAreIncludedOnSameDate()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var date = new DateTime(2026, 3, 10);
+
+        await fixture.AddOrderAsync("CAL-7", OrderStatus.Approved, 35, date, isScheduled: true);
+        await fixture.AddOrderAsync("CAL-8", OrderStatus.Approved, 40, date, isScheduled: false);
+        await fixture.AddOrderAsync("CAL-9", OrderStatus.InProduction, 45, date, isScheduled: false);
+
+        var service = fixture.CreateService();
+        var day = (await service.GetCalendarAsync(date, date)).Single();
+
+        Assert.NotEmpty(day.ScheduledItems);
+        Assert.NotEmpty(day.UnscheduledItems);
+        Assert.Equal(2, day.UnscheduledItems.Count);
+        Assert.Equal(1, day.ScheduledItems.Count);
+    }
+
     private sealed class TestFixture : IAsyncDisposable
     {
         private readonly DbContextOptions<AppDbContext> _options;
@@ -260,6 +318,11 @@ public class ProductionDemandSchedulingTests
             var schedule = await db.DeliverySchedules.FirstAsync(x => x.OrderId == orderId);
             db.DeliverySchedules.Remove(schedule);
             await db.SaveChangesAsync();
+        }
+
+        public ProductionService CreateService()
+        {
+            return new ProductionService(new AppDbContext(_options), NullLogger<ProductionService>.Instance);
         }
 
         public async Task<decimal> GetDemandAsync(DateTime date)

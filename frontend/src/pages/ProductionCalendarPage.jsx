@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import StatusBlock from "../components/StatusBlock";
-import { getProductionPlans } from "../services/api";
+import { getProductionCalendar } from "../services/api";
 
 const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -48,7 +48,7 @@ function formatShortDate(value) {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function formatCurrency(value) {
+function formatNumber(value) {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) return "0";
   return numeric.toLocaleString(undefined, {
@@ -59,7 +59,7 @@ function formatCurrency(value) {
 
 function ProductionCalendarPage() {
   const [selectedDate, setSelectedDate] = useState(toLocalYMD(new Date()));
-  const [plansByDate, setPlansByDate] = useState({});
+  const [calendarByDate, setCalendarByDate] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -67,47 +67,37 @@ function ProductionCalendarPage() {
   const calendarDays = useMemo(() => getCalendarDays(selectedDate), [selectedDate]);
 
   useEffect(() => {
-    async function loadMonthPlans() {
+    async function loadMonthCalendar() {
       setLoading(true);
       setError("");
 
       try {
         const month = monthStart.getMonth();
         const year = monthStart.getFullYear();
-        const lastDay = new Date(year, month + 1, 0).getDate();
-        const dates = Array.from({ length: lastDay }, (_, index) => {
-          const date = new Date(year, month, index + 1);
-          return toLocalYMD(date);
-        });
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const fromDate = toLocalYMD(firstDay);
+        const toDate = toLocalYMD(lastDay);
 
-        const results = await Promise.all(
-          dates.map(async (date) => {
-            try {
-              const rows = await getProductionPlans(date);
-              return { date, rows: Array.isArray(rows) ? rows : [] };
-            } catch {
-              return { date, rows: [] };
-            }
-          })
-        );
-
-        const nextPlans = {};
-        results.forEach(({ date, rows }) => {
-          nextPlans[date] = rows;
+        const rows = await getProductionCalendar(fromDate, toDate);
+        const nextByDate = {};
+        (rows || []).forEach((day) => {
+          nextByDate[day.date] = day;
         });
-        setPlansByDate(nextPlans);
+        setCalendarByDate(nextByDate);
       } catch (requestError) {
-        setPlansByDate({});
+        setCalendarByDate({});
         setError(requestError.message || "Unable to load production calendar");
       } finally {
         setLoading(false);
       }
     }
 
-    void loadMonthPlans();
+    void loadMonthCalendar();
   }, [monthStart]);
 
-  const selectedPlans = plansByDate[selectedDate] || [];
+  const selectedDay = calendarByDate[selectedDate] || { scheduledItems: [], unscheduledItems: [] };
+  const selectedItems = [...selectedDay.scheduledItems, ...selectedDay.unscheduledItems];
 
   const monthLabel = monthStart.toLocaleDateString(undefined, {
     month: "long",
@@ -130,7 +120,7 @@ function ProductionCalendarPage() {
     <section>
       <header className="page-header">
         <h2>Production Calendar</h2>
-        <p>Daily production plan view using the existing ProductionPlan source of truth.</p>
+        <p>Daily production work grouped by scheduled and unscheduled items using the existing workflow.</p>
       </header>
 
       <div className="panel" style={{ marginBottom: 16 }}>
@@ -158,9 +148,9 @@ function ProductionCalendarPage() {
         <StatusBlock
           loading={loading}
           error={error}
-          empty={!loading && !error && Object.keys(plansByDate).length === 0}
-          loadingText="Loading production plan calendar..."
-          emptyText="No production plan data found for this month"
+          empty={!loading && !error && Object.keys(calendarByDate).length === 0}
+          loadingText="Loading production calendar..."
+          emptyText="No production work found for this month"
           spinner
         />
       </div>
@@ -183,7 +173,10 @@ function ProductionCalendarPage() {
 
               {calendarDays.map((dateValue, index) => {
                 const dateKey = dateValue ? toLocalYMD(dateValue) : "";
-                const dayPlans = dateKey ? plansByDate[dateKey] || [] : [];
+                const day = dateKey ? calendarByDate[dateKey] : null;
+                const scheduledCount = day ? day.scheduledItems.length : 0;
+                const unscheduledCount = day ? day.unscheduledItems.length : 0;
+                const totalCount = scheduledCount + unscheduledCount;
                 const isSelected = dateKey === selectedDate;
                 const isCurrentMonth = dateValue && dateValue.getMonth() === monthStart.getMonth();
 
@@ -209,29 +202,38 @@ function ProductionCalendarPage() {
                           <span style={{ fontWeight: isCurrentMonth ? 700 : 500, color: isCurrentMonth ? "inherit" : "#6b7280" }}>
                             {dateValue.getDate()}
                           </span>
-                          {dayPlans.length > 0 && (
+                          {totalCount > 0 && (
                             <span className="badge green" style={{ fontSize: 10 }}>
-                              {dayPlans.length} item{dayPlans.length > 1 ? "s" : ""}
+                              {totalCount} item{totalCount > 1 ? "s" : ""}
                             </span>
                           )}
                         </div>
 
-                        {dayPlans.length > 0 ? (
+                        {totalCount > 0 ? (
                           <>
-                            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-                              {formatCurrency(dayPlans.reduce((sum, plan) => sum + Number(plan.productionQuantity ?? 0), 0))} qty
-                            </div>
-                            {dayPlans.slice(0, 2).map((plan) => (
-                              <div key={`${dateKey}-${plan.productId}`} style={{ fontSize: 11, marginBottom: 2 }}>
-                                {plan.productName || "Product"}: {formatCurrency(plan.productionQuantity || 0)}
+                            {scheduledCount > 0 && (
+                              <div style={{ fontSize: 11, marginBottom: 4, color: "#166534", fontWeight: 700 }}>
+                                {scheduledCount} scheduled
+                              </div>
+                            )}
+                            {unscheduledCount > 0 && (
+                              <div style={{ fontSize: 11, marginBottom: 4, color: "#92400e", fontWeight: 700 }}>
+                                {unscheduledCount} unscheduled
+                              </div>
+                            )}
+                            {day && day.scheduledItems.slice(0, 2).map((item) => (
+                              <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} style={{ fontSize: 11, marginBottom: 2 }}>
+                                {item.orderNumber}: {item.productName}
                               </div>
                             ))}
-                            {dayPlans.length > 2 && (
-                              <div style={{ fontSize: 11, color: "#475569" }}>+{dayPlans.length - 2} more</div>
-                            )}
+                            {day && day.unscheduledItems.slice(0, 1).map((item) => (
+                              <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} style={{ fontSize: 11, marginBottom: 2 }}>
+                                {item.orderNumber}: {item.productName}
+                              </div>
+                            ))}
                           </>
                         ) : (
-                          <div style={{ color: "#6b7280", fontSize: 11 }}>No plan</div>
+                          <div style={{ color: "#6b7280", fontSize: 11 }}>No production work</div>
                         )}
                       </>
                     ) : null}
@@ -243,60 +245,72 @@ function ProductionCalendarPage() {
 
           <div className="panel">
             <div className="section-heading" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>Production plan for {formatShortDate(selectedDate)}</h3>
+              <h3 style={{ margin: 0 }}>Production work for {formatShortDate(selectedDate)}</h3>
             </div>
 
-            {selectedPlans.length === 0 ? (
-              <p className="status-text">No production plan rows exist for this date.</p>
+            {selectedItems.length === 0 ? (
+              <p className="status-text">No production work for this date.</p>
             ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
-                      <th style={{ textAlign: "right", padding: "8px 6px" }}>Opening Stock</th>
-                      <th style={{ textAlign: "right", padding: "8px 6px" }}>Production Qty</th>
-                      <th style={{ textAlign: "right", padding: "8px 6px" }}>Total Demand</th>
-                      <th style={{ textAlign: "right", padding: "8px 6px" }}>Closing Stock</th>
-                      <th style={{ textAlign: "left", padding: "8px 6px" }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedPlans.map((plan) => {
-                      const shortfall = Number(plan.closingStock ?? 0) < 0;
-                      return (
-                        <tr key={`${plan.productId}-${plan.date}`}>
-                          <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{plan.productName || "Unknown"}</td>
-                          <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
-                            {formatCurrency(plan.openingStock)}
-                          </td>
-                          <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
-                            {formatCurrency(plan.productionQuantity)}
-                          </td>
-                          <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>
-                            {formatCurrency(plan.totalOrderDemand)}
-                          </td>
-                          <td
-                            style={{
-                              padding: "8px 6px",
-                              borderTop: "1px solid #eee",
-                              textAlign: "right",
-                              color: shortfall ? "var(--danger-color, #b00020)" : "inherit",
-                              fontWeight: shortfall ? 700 : 400,
-                            }}
-                          >
-                            {formatCurrency(plan.closingStock)}
-                          </td>
-                          <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
-                            <span className={shortfall ? "badge orange" : "badge green"}>
-                              {shortfall ? "Shortfall" : "OK"}
-                            </span>
-                          </td>
+              <div style={{ display: "grid", gap: 16 }}>
+                {selectedDay.scheduledItems.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: "0 0 8px" }}>Scheduled</h4>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Order</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
+                          <th style={{ textAlign: "right", padding: "8px 6px" }}>Quantity</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>DC</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Status</th>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody>
+                        {selectedDay.scheduledItems.map((item) => (
+                          <tr key={`scheduled-${item.orderId}-${item.orderItemId}`}>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.orderNumber}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.productName}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>{formatNumber(item.quantity)}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.distributionCentreName}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
+                              <span className="badge green">{item.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {selectedDay.unscheduledItems.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: "0 0 8px" }}>Unscheduled</h4>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Order</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
+                          <th style={{ textAlign: "right", padding: "8px 6px" }}>Quantity</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>DC</th>
+                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedDay.unscheduledItems.map((item) => (
+                          <tr key={`unscheduled-${item.orderId}-${item.orderItemId}`}>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.orderNumber}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.productName}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>{formatNumber(item.quantity)}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.distributionCentreName}</td>
+                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
+                              <span className="badge orange">{item.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>

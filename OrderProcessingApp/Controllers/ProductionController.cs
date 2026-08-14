@@ -110,6 +110,21 @@ public class ProductionController : ControllerBase
         return Ok(plans);
     }
 
+    [HttpGet("calendar")]
+    public async Task<ActionResult<List<ProductionCalendarDayDto>>> GetCalendar(
+        [FromQuery] DateTime fromDate,
+        [FromQuery] DateTime toDate,
+        CancellationToken cancellationToken)
+    {
+        if (fromDate > toDate)
+        {
+            return BadRequest(new { message = "fromDate must be on or before toDate." });
+        }
+
+        var result = await _productionService.GetCalendarAsync(fromDate, toDate, cancellationToken);
+        return Ok(result);
+    }
+
     [HttpGet("check")]
     public async Task<ActionResult<List<StockCheckDto>>> CheckStock([FromQuery] DateTime date, CancellationToken cancellationToken)
     {

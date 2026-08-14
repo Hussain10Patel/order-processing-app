@@ -87,6 +87,33 @@ public class ProductionPlanDto
     public string? Notes { get; set; }
 }
 
+public class ProductionCalendarItemDto
+{
+    public int OrderId { get; set; }
+    public int OrderItemId { get; set; }
+    public string OrderNumber { get; set; } = string.Empty;
+    public int ProductId { get; set; }
+    public string ProductName { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public decimal Pallets { get; set; }
+    public int DistributionCentreId { get; set; }
+    public string DistributionCentreName { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string ScheduleStatus { get; set; } = string.Empty;
+    public bool IsScheduled { get; set; }
+    public bool IsProcessed { get; set; }
+    public bool HasProductionDecision { get; set; }
+    public bool? DecisionIsSufficient { get; set; }
+    public decimal? RequiredProductionQty { get; set; }
+}
+
+public class ProductionCalendarDayDto
+{
+    public string Date { get; set; } = string.Empty;
+    public List<ProductionCalendarItemDto> ScheduledItems { get; set; } = new();
+    public List<ProductionCalendarItemDto> UnscheduledItems { get; set; } = new();
+}
+
 public class StockCheckDto
 {
     public int ProductId { get; set; }
