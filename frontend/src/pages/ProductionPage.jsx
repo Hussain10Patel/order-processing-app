@@ -468,6 +468,7 @@ function ProductionPage() {
                         const stockLeftover = hasRemainingStock
                           ? Number(item.remainingStock)
                           : toNumber(item.currentStock) - toNumber(item.requiredStock);
+                        const stillNeededProduction = toNumber(item.productionRequired);
                         const isShortage = stockLeftover < 0;
 
                         console.log("[UI STOCK VALUE]", item.productName, currentStockValue);
@@ -509,38 +510,46 @@ function ProductionPage() {
                               {stockLeftover.toFixed(2)}
                             </td>
                             <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <span
+                                  className={stillNeededProduction > 0 ? "badge orange" : "badge green"}
+                                  style={{ alignSelf: "flex-start" }}
+                                >
+                                  Still Needed for Production: {stillNeededProduction.toFixed(2)}
+                                </span>
                                 <span
                                   className={isShortage ? "badge orange" : "badge green"}
-                                  style={{ alignSelf: "center" }}
+                                  style={{ alignSelf: "flex-start" }}
                                 >
                                   {isShortage ? "Shortage" : "Projected Stock After Production"}: {stockLeftover.toFixed(2)}
                                 </span>
-                                {editable && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      className="btn-success"
-                                      disabled={saving}
-                                      onClick={() => submitDecision(order, item, true)}
-                                    >
-                                      OK
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn-warning"
-                                      disabled={saving}
-                                      onClick={() => submitDecision(order, item, false)}
-                                    >
-                                      Produce More
-                                    </button>
-                                  </>
-                                )}
-                                {itemDecision && (
-                                  <span className="badge green" style={{ alignSelf: "center" }}>
-                                    {itemDecision.isSufficient ? "OK saved" : "Produce More saved"}
-                                  </span>
-                                )}
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  {editable && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="btn-success"
+                                        disabled={saving}
+                                        onClick={() => submitDecision(order, item, true)}
+                                      >
+                                        OK
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn-warning"
+                                        disabled={saving}
+                                        onClick={() => submitDecision(order, item, false)}
+                                      >
+                                        Produce More
+                                      </button>
+                                    </>
+                                  )}
+                                  {itemDecision && (
+                                    <span className="badge green" style={{ alignSelf: "center" }}>
+                                      {itemDecision.isSufficient ? "OK saved" : "Produce More saved"}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </td>
                           </tr>
