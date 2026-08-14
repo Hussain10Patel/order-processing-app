@@ -6,6 +6,7 @@ const links = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/upload", label: "Upload CSV" },
   { to: "/production", label: "Production" },
+  { to: "/production-calendar", label: "Production Calendar" },
   { to: "/delivery", label: "Delivery" },
   { to: "/reports", label: "Reports" },
   { to: "/admin", label: "Admin" },
