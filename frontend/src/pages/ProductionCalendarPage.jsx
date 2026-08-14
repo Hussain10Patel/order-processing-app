@@ -41,11 +41,16 @@ function getCalendarDays(dateInput) {
   return cells;
 }
 
-function formatShortDate(value) {
+function formatFriendlyDate(value) {
   if (!value) return "-";
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
 }
 
 function formatNumber(value) {
@@ -117,24 +122,32 @@ function ProductionCalendarPage() {
   }
 
   return (
-    <section>
-      <header className="page-header">
-        <h2>Production Calendar</h2>
-        <p>Daily production work grouped by scheduled and unscheduled items using the existing workflow.</p>
+    <section className="production-calendar-page">
+      <header className="page-header production-calendar-header">
+        <div>
+          <h2>Production Calendar</h2>
+          <p>Daily view of scheduled and unscheduled production work.</p>
+        </div>
       </header>
 
-      <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="section-heading" style={{ gap: 12, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button type="button" onClick={() => moveMonth(-1)} className="secondary">Prev</button>
-            <button type="button" onClick={() => moveMonth(1)} className="secondary">Next</button>
+      <div className="panel production-calendar-top-panel">
+        <div className="production-calendar-toolbar">
+          <div className="calendar-toolbar-group left-group">
+            <button type="button" className="secondary calendar-nav-button" onClick={() => moveMonth(-1)} aria-label="Previous month">
+              ‹
+            </button>
+            <button type="button" className="secondary calendar-nav-button" onClick={() => moveMonth(1)} aria-label="Next month">
+              ›
+            </button>
+            <button type="button" className="secondary" onClick={() => setSelectedDate(toLocalYMD(new Date()))}>Today</button>
           </div>
 
-          <div>
+          <div className="calendar-toolbar-title">
+            <span className="calendar-icon" aria-hidden="true">📅</span>
             <strong>{monthLabel}</strong>
           </div>
 
-          <div style={{ minWidth: 220 }}>
+          <div className="calendar-toolbar-input">
             <label htmlFor="production-calendar-date">Selected date</label>
             <input
               id="production-calendar-date"
@@ -145,32 +158,46 @@ function ProductionCalendarPage() {
           </div>
         </div>
 
-        <StatusBlock
-          loading={loading}
-          error={error}
-          empty={!loading && !error && Object.keys(calendarByDate).length === 0}
-          loadingText="Loading production calendar..."
-          emptyText="No production work found for this month"
-          spinner
-        />
+        <div className="calendar-view-switcher" aria-label="Calendar view selector">
+          <button type="button" className="calendar-view-button active" disabled>
+            Month
+          </button>
+          <button type="button" className="calendar-view-button" disabled>
+            Week
+          </button>
+          <button type="button" className="calendar-view-button" disabled>
+            Day
+          </button>
+        </div>
+
+        <div className="calendar-legend" aria-label="Production status legend">
+          <span className="legend-item"><span className="legend-swatch scheduled-swatch" />Scheduled</span>
+          <span className="legend-item"><span className="legend-swatch unscheduled-swatch" />Unscheduled</span>
+          <span className="legend-item"><span className="legend-swatch empty-swatch" />No production work</span>
+        </div>
       </div>
+
+      <StatusBlock
+        loading={loading}
+        error={error}
+        empty={!loading && !error && Object.keys(calendarByDate).length === 0}
+        loadingText="Loading production calendar..."
+        emptyText="No production work found for this month"
+        spinner
+      />
 
       {!loading && !error && (
         <>
-          <div className="panel" style={{ marginBottom: 16 }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(7, minmax(120px, 1fr))",
-                gap: 8,
-              }}
-            >
+          <div className="panel production-calendar-month-panel">
+            <div className="calendar-weekdays">
               {weekdayLabels.map((label) => (
-                <div key={label} style={{ fontWeight: 700, padding: "8px 10px", textAlign: "center" }}>
+                <div key={label} className="calendar-weekday">
                   {label}
                 </div>
               ))}
+            </div>
 
+            <div className="calendar-month-grid">
               {calendarDays.map((dateValue, index) => {
                 const dateKey = dateValue ? toLocalYMD(dateValue) : "";
                 const day = dateKey ? calendarByDate[dateKey] : null;
@@ -178,62 +205,56 @@ function ProductionCalendarPage() {
                 const unscheduledCount = day ? day.unscheduledItems.length : 0;
                 const totalCount = scheduledCount + unscheduledCount;
                 const isSelected = dateKey === selectedDate;
-                const isCurrentMonth = dateValue && dateValue.getMonth() === monthStart.getMonth();
+                const isMuted = dateValue && dateValue.getMonth() !== monthStart.getMonth();
 
                 return (
                   <button
                     key={dateKey || `empty-${index}`}
                     type="button"
                     onClick={() => handleCellClick(dateKey)}
-                    style={{
-                      border: isSelected ? "2px solid #1d4ed8" : "1px solid #d9dfe8",
-                      borderRadius: 10,
-                      minHeight: 120,
-                      textAlign: "left",
-                      padding: 10,
-                      background: dateValue ? (isSelected ? "#eff6ff" : "#fff") : "#f8fafc",
-                      opacity: dateValue ? 1 : 0.7,
-                      cursor: dateValue ? "pointer" : "default",
-                    }}
+                    className={[
+                      "calendar-day-cell",
+                      dateValue ? "has-date" : "empty-cell",
+                      isSelected ? "selected" : "",
+                      isMuted ? "muted" : "",
+                      totalCount > 0 ? "has-work" : "",
+                    ].filter(Boolean).join(" ")}
                   >
                     {dateValue ? (
                       <>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                          <span style={{ fontWeight: isCurrentMonth ? 700 : 500, color: isCurrentMonth ? "inherit" : "#6b7280" }}>
-                            {dateValue.getDate()}
-                          </span>
-                          {totalCount > 0 && (
-                            <span className="badge green" style={{ fontSize: 10 }}>
-                              {totalCount} item{totalCount > 1 ? "s" : ""}
-                            </span>
-                          )}
+                        <div className="calendar-day-header">
+                          <span className="calendar-day-number">{dateValue.getDate()}</span>
+                          {totalCount > 0 && <span className="calendar-badge">{totalCount}</span>}
                         </div>
 
                         {totalCount > 0 ? (
-                          <>
+                          <div className="calendar-day-body">
                             {scheduledCount > 0 && (
-                              <div style={{ fontSize: 11, marginBottom: 4, color: "#166534", fontWeight: 700 }}>
+                              <div className="calendar-day-stat scheduled-stat">
                                 {scheduledCount} scheduled
                               </div>
                             )}
                             {unscheduledCount > 0 && (
-                              <div style={{ fontSize: 11, marginBottom: 4, color: "#92400e", fontWeight: 700 }}>
+                              <div className="calendar-day-stat unscheduled-stat">
                                 {unscheduledCount} unscheduled
                               </div>
                             )}
-                            {day && day.scheduledItems.slice(0, 2).map((item) => (
-                              <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} style={{ fontSize: 11, marginBottom: 2 }}>
-                                {item.orderNumber}: {item.productName}
-                              </div>
-                            ))}
-                            {day && day.unscheduledItems.slice(0, 1).map((item) => (
-                              <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} style={{ fontSize: 11, marginBottom: 2 }}>
-                                {item.orderNumber}: {item.productName}
-                              </div>
-                            ))}
-                          </>
+
+                            <div className="calendar-day-preview">
+                              {day && day.scheduledItems.slice(0, 1).map((item) => (
+                                <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                  {item.orderNumber}: {item.productName}
+                                </div>
+                              ))}
+                              {day && day.unscheduledItems.slice(0, 1).map((item) => (
+                                <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                  {item.orderNumber}: {item.productName}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         ) : (
-                          <div style={{ color: "#6b7280", fontSize: 11 }}>No production work</div>
+                          <div className="calendar-day-empty">No production work</div>
                         )}
                       </>
                     ) : null}
@@ -243,72 +264,70 @@ function ProductionCalendarPage() {
             </div>
           </div>
 
-          <div className="panel">
-            <div className="section-heading" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>Production work for {formatShortDate(selectedDate)}</h3>
+          <div className="panel production-calendar-detail-panel">
+            <div className="production-detail-header">
+              <h3>{formatFriendlyDate(selectedDate)}</h3>
             </div>
 
             {selectedItems.length === 0 ? (
-              <p className="status-text">No production work for this date.</p>
+              <p className="status-text">No production work</p>
             ) : (
-              <div style={{ display: "grid", gap: 16 }}>
+              <div className="production-detail-groups">
                 {selectedDay.scheduledItems.length > 0 && (
-                  <div>
-                    <h4 style={{ margin: "0 0 8px" }}>Scheduled</h4>
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Order</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
-                          <th style={{ textAlign: "right", padding: "8px 6px" }}>Quantity</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>DC</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedDay.scheduledItems.map((item) => (
-                          <tr key={`scheduled-${item.orderId}-${item.orderItemId}`}>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.orderNumber}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.productName}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>{formatNumber(item.quantity)}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.distributionCentreName}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
-                              <span className="badge green">{item.status}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="production-detail-group scheduled-group">
+                    <h4>Scheduled ({selectedDay.scheduledItems.length})</h4>
+                    <div className="production-items-list">
+                      {selectedDay.scheduledItems.map((item) => (
+                        <article key={`scheduled-${item.orderId}-${item.orderItemId}`} className="production-item-card scheduled-card">
+                          <div className="production-item-main">
+                            <div className="production-item-order">{item.orderNumber}</div>
+                            <span className="status-chip success">{item.status}</span>
+                          </div>
+                          <div className="production-item-product">{item.productName}</div>
+                          <div className="production-item-meta">
+                            <span>{formatNumber(item.quantity)} pcs</span>
+                            {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
+                          </div>
+                          {item.requiredProductionQty != null && (
+                            <div className="production-item-note">Required production: {formatNumber(item.requiredProductionQty)}</div>
+                          )}
+                          {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
+                            <div className="production-item-note">
+                              Production decision: {item.decisionIsSufficient ? "Sufficient" : "Insufficient"}
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>
                   </div>
                 )}
 
                 {selectedDay.unscheduledItems.length > 0 && (
-                  <div>
-                    <h4 style={{ margin: "0 0 8px" }}>Unscheduled</h4>
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Order</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Product</th>
-                          <th style={{ textAlign: "right", padding: "8px 6px" }}>Quantity</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>DC</th>
-                          <th style={{ textAlign: "left", padding: "8px 6px" }}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedDay.unscheduledItems.map((item) => (
-                          <tr key={`unscheduled-${item.orderId}-${item.orderItemId}`}>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.orderNumber}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.productName}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee", textAlign: "right" }}>{formatNumber(item.quantity)}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>{item.distributionCentreName}</td>
-                            <td style={{ padding: "8px 6px", borderTop: "1px solid #eee" }}>
-                              <span className="badge orange">{item.status}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="production-detail-group unscheduled-group">
+                    <h4>Unscheduled ({selectedDay.unscheduledItems.length})</h4>
+                    <div className="production-items-list">
+                      {selectedDay.unscheduledItems.map((item) => (
+                        <article key={`unscheduled-${item.orderId}-${item.orderItemId}`} className="production-item-card unscheduled-card">
+                          <div className="production-item-main">
+                            <div className="production-item-order">{item.orderNumber}</div>
+                            <span className="status-chip warning">{item.status}</span>
+                          </div>
+                          <div className="production-item-product">{item.productName}</div>
+                          <div className="production-item-meta">
+                            <span>{formatNumber(item.quantity)} pcs</span>
+                            {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
+                          </div>
+                          {item.requiredProductionQty != null && (
+                            <div className="production-item-note">Required production: {formatNumber(item.requiredProductionQty)}</div>
+                          )}
+                          {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
+                            <div className="production-item-note">
+                              Production decision: {item.decisionIsSufficient ? "Sufficient" : "Insufficient"}
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
