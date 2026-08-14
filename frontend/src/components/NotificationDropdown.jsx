@@ -95,6 +95,7 @@ function NotificationDropdown() {
   const [error, setError] = useState("");
   const [entries, setEntries] = useState([]);
   const [lastReadAt, setLastReadAt] = useState(() => readStoredLastReadAt());
+  const [activeCategory, setActiveCategory] = useState("Order Changes");
   const containerRef = useRef(null);
 
   const markAllAsRead = useCallback(
@@ -211,6 +212,37 @@ function NotificationDropdown() {
 
   const groupedEntries = useMemo(() => buildNotificationGroups(entries), [entries]);
 
+  useEffect(() => {
+    if (groupedEntries.length === 0) {
+      return;
+    }
+
+    if (!groupedEntries.some((group) => group.category === activeCategory)) {
+      setActiveCategory(groupedEntries[0].category);
+    }
+  }, [groupedEntries, activeCategory]);
+
+  const categoryTabs = useMemo(
+    () =>
+      CATEGORY_ORDER.map((category) => {
+        const group = groupedEntries.find((entryGroup) => entryGroup.category === category);
+
+        return {
+          category,
+          entries: group?.entries ?? [],
+          unreadCount: entries.filter(
+            (entry) => getCategoryForEntry(entry) === category && getEntryTimestamp(entry) > lastReadTime
+          ).length,
+        };
+      }),
+    [entries, groupedEntries, lastReadTime]
+  );
+
+  const activeCategoryGroup = useMemo(
+    () => categoryTabs.find((tab) => tab.category === activeCategory) ?? categoryTabs[0] ?? { category: "Order Changes", entries: [], unreadCount: 0 },
+    [activeCategory, categoryTabs]
+  );
+
   const handleToggle = useCallback(() => {
     setIsOpen((current) => !current);
   }, []);
@@ -252,33 +284,53 @@ function NotificationDropdown() {
           {unreadCount > 0 && <span className="status-chip danger">{unreadCount} unread</span>}
         </div>
 
+        <div className="notification-tab-list" role="tablist" aria-label="Notification categories">
+          {CATEGORY_ORDER.map((category) => {
+            const tab = categoryTabs.find((item) => item.category === category) ?? { category, entries: [], unreadCount: 0 };
+            const isActive = activeCategory === category;
+
+            return (
+              <button
+                key={category}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`notification-tab${isActive ? " active" : ""}`}
+                onClick={() => setActiveCategory(category)}
+              >
+                <span>{category}</span>
+                {tab.unreadCount > 0 && <span className="notification-tab-badge">{tab.unreadCount}</span>}
+              </button>
+            );
+          })}
+        </div>
+
         <div className="notification-dropdown-body">
           {loading && <p className="notification-state">Loading notifications...</p>}
           {!loading && error && <p className="notification-state error">Failed to load notifications</p>}
           {!loading && !error && entries.length === 0 && <p className="notification-state">No new notifications</p>}
 
-          {!loading && !error && groupedEntries.length > 0 && (
+          {!loading && !error && entries.length > 0 && (
             <div className="notification-list">
-              {groupedEntries.map((group) => (
-                <div key={group.category} className="notification-category-group">
-                  <h4 className="notification-category-header">{group.category}</h4>
-                  {group.entries.map((entry) => {
-                    const isUnread = getEntryTimestamp(entry) > lastReadTime;
+              {activeCategoryGroup.entries.length > 0 ? (
+                activeCategoryGroup.entries.map((entry) => {
+                  const isUnread = getEntryTimestamp(entry) > lastReadTime;
 
-                    return (
-                      <button
-                        type="button"
-                        key={`${group.category}-${entry.id}`}
-                        className={`notification-item${isUnread ? " unread" : ""}`}
-                        onClick={() => handleNotificationClick(entry)}
-                      >
-                        <p>{entry.message}</p>
-                        <small title={formatDateTime(entry.createdAt)}>{formatRelativeTime(entry.createdAt)}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
+                  return (
+                    <button
+                      type="button"
+                      key={`${activeCategoryGroup.category}-${entry.id}`}
+                      className={`notification-item${isUnread ? " unread" : ""}`}
+                      onClick={() => handleNotificationClick(entry)}
+                    >
+                      <p>{entry.message}</p>
+                      <small title={formatDateTime(entry.createdAt)}>{formatRelativeTime(entry.createdAt)}</small>
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="notification-state">No notifications</p>
+              )}
             </div>
           )}
         </div>
