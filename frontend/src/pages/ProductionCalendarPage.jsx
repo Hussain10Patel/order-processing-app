@@ -62,6 +62,22 @@ function formatNumber(value) {
   });
 }
 
+function getDecisionLabel(item) {
+  if (item.decisionIsSufficient === true) {
+    return "Sufficient";
+  }
+
+  if (item.decisionIsSufficient === false) {
+    return "Requires production";
+  }
+
+  if (item.requiredProductionQty != null && Number(item.requiredProductionQty) > 0) {
+    return "Requires production";
+  }
+
+  return "No decision";
+}
+
 function ProductionCalendarPage() {
   const [selectedDate, setSelectedDate] = useState(toLocalYMD(new Date()));
   const [calendarByDate, setCalendarByDate] = useState({});
@@ -293,7 +309,7 @@ function ProductionCalendarPage() {
                           )}
                           {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
                             <div className="production-item-note">
-                              Production decision: {item.decisionIsSufficient ? "Sufficient" : "Insufficient"}
+                              Production decision: {getDecisionLabel(item)}
                             </div>
                           )}
                         </article>
@@ -322,7 +338,7 @@ function ProductionCalendarPage() {
                           )}
                           {item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined && (
                             <div className="production-item-note">
-                              Production decision: {item.decisionIsSufficient ? "Sufficient" : "Insufficient"}
+                              Production decision: {getDecisionLabel(item)}
                             </div>
                           )}
                         </article>

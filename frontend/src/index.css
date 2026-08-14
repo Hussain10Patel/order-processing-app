@@ -269,6 +269,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #ffffff;
+  color: #111827;
   text-align: left;
   padding: 10px 10px 8px;
   display: flex;
@@ -322,6 +323,15 @@ body {
 .calendar-day-number {
   font-size: 13px;
   font-weight: 700;
+  color: #111827;
+}
+
+.calendar-day-cell.muted .calendar-day-number {
+  color: #475569;
+}
+
+.calendar-day-cell.selected .calendar-day-number {
+  color: #111827;
 }
 
 .calendar-badge {

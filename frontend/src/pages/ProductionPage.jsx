@@ -514,7 +514,7 @@ function ProductionPage() {
                                   className={isShortage ? "badge orange" : "badge green"}
                                   style={{ alignSelf: "center" }}
                                 >
-                                  {isShortage ? "Shortage" : "Stock Leftover OK"}: {stockLeftover.toFixed(2)}
+                                  {isShortage ? "Shortage" : "Projected Stock After Production"}: {stockLeftover.toFixed(2)}
                                 </span>
                                 {editable && (
                                   <>
