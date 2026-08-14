@@ -112,6 +112,117 @@ public class ProductionRollingStockTests
     }
 
     [Fact]
+    public async Task SaveProductionDecisionsAsync_WhenOkDecision_SavesExactlyOneProductionAuditEntry()
+    {
+        await using var fixture = await RollingFixture.CreateAsync();
+        var day = new DateTime(2026, 8, 14);
+        var order = await fixture.AddScheduledOrderAsync("ORD-AUD-OK", 1, 1, day, 100m);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new ProductionService(db, NullLogger<ProductionService>.Instance, new AuditService(db));
+
+        await service.SaveProductionDecisionsAsync(new SaveProductionDecisionsDto
+        {
+            OrderId = order.OrderId,
+            Decisions = new List<ProductionDecisionItemDto>
+            {
+                new()
+                {
+                    OrderItemId = order.ItemId,
+                    IsSufficient = true,
+                    RequiredProductionQty = 0,
+                    ManualInitialStock = 100m,
+                    Notes = "audit ok"
+                }
+            }
+        });
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "ProductionDecision" && x.Field == "Production Decision")
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync();
+
+        var auditEntry = Assert.Single(entries);
+        Assert.Equal("ProductionDecision", auditEntry.Entity);
+        Assert.Equal("Production Decision", auditEntry.Field);
+        Assert.Equal(order.OrderId, auditEntry.EntityId);
+        Assert.Equal("Pending", auditEntry.OldValue);
+        Assert.Equal("OK", auditEntry.NewValue);
+    }
+
+    [Fact]
+    public async Task SaveProductionDecisionsAsync_WhenProduceMoreDecision_SavesExactlyOneProductionAuditEntry()
+    {
+        await using var fixture = await RollingFixture.CreateAsync();
+        var day = new DateTime(2026, 8, 14);
+        var order = await fixture.AddScheduledOrderAsync("ORD-AUD-PRODUCE-MORE", 1, 1, day, 100m);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new ProductionService(db, NullLogger<ProductionService>.Instance, new AuditService(db));
+
+        await service.SaveProductionDecisionsAsync(new SaveProductionDecisionsDto
+        {
+            OrderId = order.OrderId,
+            Decisions = new List<ProductionDecisionItemDto>
+            {
+                new()
+                {
+                    OrderItemId = order.ItemId,
+                    IsSufficient = false,
+                    RequiredProductionQty = 0,
+                    ManualInitialStock = 0m,
+                    Notes = "audit produce more"
+                }
+            }
+        });
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "ProductionDecision" && x.Field == "Production Decision")
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync();
+
+        var auditEntry = Assert.Single(entries);
+        Assert.Equal("ProductionDecision", auditEntry.Entity);
+        Assert.Equal("Production Decision", auditEntry.Field);
+        Assert.Equal(order.OrderId, auditEntry.EntityId);
+        Assert.Contains("Produce More", auditEntry.NewValue);
+        Assert.StartsWith("Produce More (", auditEntry.NewValue);
+    }
+
+    [Fact]
+    public async Task SaveProductionDecisionsAsync_WhenOrderItemIsInvalid_ThrowsAndDoesNotCreateProductionAuditEntry()
+    {
+        await using var fixture = await RollingFixture.CreateAsync();
+        var day = new DateTime(2026, 8, 14);
+        var order = await fixture.AddScheduledOrderAsync("ORD-AUD-FAIL", 1, 1, day, 100m);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new ProductionService(db, NullLogger<ProductionService>.Instance, new AuditService(db));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.SaveProductionDecisionsAsync(new SaveProductionDecisionsDto
+        {
+            OrderId = order.OrderId,
+            Decisions = new List<ProductionDecisionItemDto>
+            {
+                new()
+                {
+                    OrderItemId = order.ItemId + 999,
+                    IsSufficient = true,
+                    RequiredProductionQty = 0,
+                    ManualInitialStock = 100m,
+                    Notes = "invalid item"
+                }
+            }
+        }));
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "ProductionDecision" && x.Field == "Production Decision")
+            .ToListAsync();
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
     public async Task ManualStockOverride_Day2ClosingCarriesToDay3()
     {
         await using var fixture = await RollingFixture.CreateAsync();
@@ -353,6 +464,8 @@ public class ProductionRollingStockTests
         {
             _options = options;
         }
+
+        public AppDbContext CreateDbContext() => new(_options);
 
         public static async Task<RollingFixture> CreateAsync()
         {

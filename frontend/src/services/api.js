@@ -714,38 +714,14 @@ export function formatRelativeTime(value) {
     return "-";
   }
 
-  const timestamp = parseUtcDate(value)?.getTime();
-  if (!timestamp || Number.isNaN(timestamp)) {
+  const date = parseUtcDate(value);
+  if (!date || Number.isNaN(date.getTime())) {
     return "-";
   }
 
-  const diffMs = Date.now() - timestamp;
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-
-  if (diffMs < minute) {
-    return "Just now";
-  }
-
-  if (diffMs < hour) {
-    const minutes = Math.max(1, Math.floor(diffMs / minute));
-    return `${minutes} min ago`;
-  }
-
-  if (diffMs < day) {
-    const hours = Math.max(1, Math.floor(diffMs / hour));
-    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  }
-
-  if (diffMs < day * 2) {
-    return "Yesterday";
-  }
-
-  const days = Math.floor(diffMs / day);
-  if (days < 7) {
-    return `${days} days ago`;
-  }
-
-  return formatDate(value);
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }

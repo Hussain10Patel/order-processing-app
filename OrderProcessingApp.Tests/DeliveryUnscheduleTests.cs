@@ -116,6 +116,132 @@ public class DeliveryUnscheduleTests
     }
 
     [Fact]
+    public async Task ScheduleDeliveryAsync_WhenSuccessful_CreatesOneScheduleAuditEntry()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 27);
+
+        var seeded = await fixture.AddOrderAsync(
+            orderNumber: "AUD-SCHED-OK",
+            status: OrderStatus.Approved,
+            quantity: 110m,
+            price: 11m,
+            deliveryDate: deliveryDate,
+            isScheduled: false,
+            withDecision: false);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new DeliveryService(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+
+        var scheduled = await service.ScheduleDeliveryAsync(seeded.OrderId, deliveryDate, "audit success");
+
+        Assert.Equal(seeded.OrderId, scheduled.OrderId);
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "Delivery" && x.Field == "Schedule")
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync();
+
+        var auditEntry = Assert.Single(entries);
+        Assert.Equal("Delivery", auditEntry.Entity);
+        Assert.Equal("Schedule", auditEntry.Field);
+        Assert.Equal(seeded.OrderId, auditEntry.EntityId);
+        Assert.Equal("Unscheduled", auditEntry.OldValue);
+        Assert.Equal($"Scheduled for {deliveryDate:yyyy-MM-dd}", auditEntry.NewValue);
+    }
+
+    [Fact]
+    public async Task ScheduleDeliveryAsync_WhenStatusInvalid_DoesNotCreateScheduleAuditEntry()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 28);
+
+        var seeded = await fixture.AddOrderAsync(
+            orderNumber: "AUD-SCHED-FAIL",
+            status: OrderStatus.Pending,
+            quantity: 120m,
+            price: 12m,
+            deliveryDate: deliveryDate,
+            isScheduled: false,
+            withDecision: false);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new DeliveryService(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ScheduleDeliveryAsync(seeded.OrderId, deliveryDate, "invalid status"));
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "Delivery" && x.Field == "Schedule")
+            .ToListAsync();
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
+    public async Task UnscheduleDeliveryAsync_WhenSuccessful_CreatesOneScheduleAuditEntry()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 29);
+
+        var seeded = await fixture.AddOrderAsync(
+            orderNumber: "AUD-UNSCHED-OK",
+            status: OrderStatus.Processed,
+            quantity: 130m,
+            price: 13m,
+            deliveryDate: deliveryDate,
+            isScheduled: true,
+            withDecision: false);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new DeliveryService(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+
+        var removed = await service.UnscheduleDeliveryAsync(seeded.OrderId);
+
+        Assert.True(removed);
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "Delivery" && x.Field == "Schedule")
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync();
+
+        var auditEntry = Assert.Single(entries);
+        Assert.Equal("Delivery", auditEntry.Entity);
+        Assert.Equal("Schedule", auditEntry.Field);
+        Assert.Equal(seeded.OrderId, auditEntry.EntityId);
+        Assert.Equal($"Scheduled for {deliveryDate:yyyy-MM-dd}", auditEntry.OldValue);
+        Assert.Equal("Unscheduled", auditEntry.NewValue);
+    }
+
+    [Fact]
+    public async Task UnscheduleDeliveryAsync_WhenAlreadyUnscheduled_DoesNotCreateScheduleAuditEntry()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var deliveryDate = new DateTime(2026, 8, 30);
+
+        var seeded = await fixture.AddOrderAsync(
+            orderNumber: "AUD-UNSCHED-FAIL",
+            status: OrderStatus.Approved,
+            quantity: 140m,
+            price: 14m,
+            deliveryDate: deliveryDate,
+            isScheduled: false,
+            withDecision: false);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new DeliveryService(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+
+        var removed = await service.UnscheduleDeliveryAsync(seeded.OrderId);
+
+        Assert.False(removed);
+
+        var entries = await db.AuditLogs
+            .Where(x => x.Entity == "Delivery" && x.Field == "Schedule")
+            .ToListAsync();
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
     public async Task Unschedule_AlreadyUnscheduled_IsHandledSafely()
     {
         await using var fixture = await TestFixture.CreateAsync();

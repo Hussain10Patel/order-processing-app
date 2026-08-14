@@ -11,7 +11,8 @@ import {
 
 const POLL_INTERVAL_MS = 20000;
 const STORAGE_KEY = "order-processing.notifications.lastReadAt";
-const MAX_NOTIFICATIONS = 25;
+const MAX_NOTIFICATIONS_PER_CATEGORY = 25;
+const CATEGORY_ORDER = ["Order Changes", "Scheduling", "Production", "Other"];
 
 function readStoredLastReadAt() {
   if (typeof window === "undefined") {
@@ -31,6 +32,49 @@ function writeStoredLastReadAt(value) {
 
 function getEntryTimestamp(entry) {
   return entry?.createdAt ? (parseUtcDate(entry.createdAt)?.getTime() ?? 0) : 0;
+}
+
+function getCategoryForEntry(entry) {
+  const rawEntity = String(entry?.entity ?? "").trim();
+
+  if (rawEntity === "Order") {
+    return "Order Changes";
+  }
+
+  if (rawEntity === "Delivery") {
+    return "Scheduling";
+  }
+
+  if (rawEntity === "ProductionDecision") {
+    return "Production";
+  }
+
+  return "Other";
+}
+
+function buildNotificationGroups(entries) {
+  const grouped = new Map();
+
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    const category = getCategoryForEntry(entry);
+    if (!grouped.has(category)) {
+      grouped.set(category, []);
+    }
+
+    grouped.get(category).push(entry);
+  });
+
+  const orderedCategories = [...CATEGORY_ORDER, ...Array.from(grouped.keys()).filter((category) => !CATEGORY_ORDER.includes(category))];
+
+  return orderedCategories
+    .filter((category) => grouped.has(category))
+    .map((category) => ({
+      category,
+      entries: [...grouped.get(category)]
+        .sort((left, right) => getEntryTimestamp(right) - getEntryTimestamp(left))
+        .slice(0, MAX_NOTIFICATIONS_PER_CATEGORY),
+    }))
+    .filter((group) => group.entries.length > 0);
 }
 
 function BellIcon() {
@@ -82,15 +126,18 @@ function NotificationDropdown() {
         );
 
         const nextEntries = (Array.isArray(auditData) ? auditData : [])
-          .sort((left, right) => getEntryTimestamp(right) - getEntryTimestamp(left))
-          .slice(0, MAX_NOTIFICATIONS)
           .map((entry) => ({
             ...entry,
+            category: getCategoryForEntry(entry),
             orderNumber: ordersById.get(entry.entityId)?.orderNumber ?? "",
             message: formatAuditEntry(entry, ordersById.get(entry.entityId)),
-          }));
+          }))
+          .sort((left, right) => getEntryTimestamp(right) - getEntryTimestamp(left));
 
-        setEntries(nextEntries);
+        const groupedEntries = buildNotificationGroups(nextEntries);
+        const flattenedEntries = groupedEntries.flatMap((group) => group.entries);
+
+        setEntries(flattenedEntries);
       } catch (requestError) {
         if (!isDisposed) {
           console.error("Failed to load notifications:", requestError);
@@ -162,6 +209,8 @@ function NotificationDropdown() {
     return entries.filter((entry) => getEntryTimestamp(entry) > lastReadTime).length;
   }, [entries, lastReadTime]);
 
+  const groupedEntries = useMemo(() => buildNotificationGroups(entries), [entries]);
+
   const handleToggle = useCallback(() => {
     setIsOpen((current) => !current);
   }, []);
@@ -208,23 +257,28 @@ function NotificationDropdown() {
           {!loading && error && <p className="notification-state error">Failed to load notifications</p>}
           {!loading && !error && entries.length === 0 && <p className="notification-state">No new notifications</p>}
 
-          {!loading && !error && entries.length > 0 && (
+          {!loading && !error && groupedEntries.length > 0 && (
             <div className="notification-list">
-              {entries.map((entry) => {
-                const isUnread = getEntryTimestamp(entry) > lastReadTime;
+              {groupedEntries.map((group) => (
+                <div key={group.category} className="notification-category-group">
+                  <h4 className="notification-category-header">{group.category}</h4>
+                  {group.entries.map((entry) => {
+                    const isUnread = getEntryTimestamp(entry) > lastReadTime;
 
-                return (
-                  <button
-                    type="button"
-                    key={entry.id}
-                    className={`notification-item${isUnread ? " unread" : ""}`}
-                    onClick={() => handleNotificationClick(entry)}
-                  >
-                    <p>{entry.message}</p>
-                    <small title={formatDateTime(entry.createdAt)}>{formatRelativeTime(entry.createdAt)}</small>
-                  </button>
-                );
-              })}
+                    return (
+                      <button
+                        type="button"
+                        key={`${group.category}-${entry.id}`}
+                        className={`notification-item${isUnread ? " unread" : ""}`}
+                        onClick={() => handleNotificationClick(entry)}
+                      >
+                        <p>{entry.message}</p>
+                        <small title={formatDateTime(entry.createdAt)}>{formatRelativeTime(entry.createdAt)}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           )}
         </div>

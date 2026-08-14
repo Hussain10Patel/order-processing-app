@@ -50,6 +50,8 @@ public class DeliveryService : IDeliveryService
         var existing = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == orderId, cancellationToken);
 
+        var scheduleAuditOldValue = existing is null ? "Unscheduled" : existing.Status;
+
         if (existing is null)
         {
             existing = new DeliverySchedule
@@ -87,6 +89,16 @@ public class DeliveryService : IDeliveryService
             existing.DeliveryDate = normalized;
             existing.Status = "Scheduled";
             existing.Notes = notes;
+        }
+
+        var scheduleAuditNewValue = $"Scheduled for {normalized:yyyy-MM-dd}";
+        if (existing is not null && (existing.DeliveryDate != normalized || !string.Equals(existing.Status, "Scheduled", StringComparison.Ordinal)))
+        {
+            _auditService.TrackChange("Delivery", orderId, "Schedule", scheduleAuditOldValue, scheduleAuditNewValue);
+        }
+        else if (existing is not null)
+        {
+            _auditService.TrackChange("Delivery", orderId, "Schedule", scheduleAuditOldValue, scheduleAuditNewValue);
         }
 
         if (order.DeliveryDate != normalized)
@@ -145,6 +157,14 @@ public class DeliveryService : IDeliveryService
         }
 
         _dbContext.DeliverySchedules.Remove(existing);
+
+        _auditService.TrackChange(
+            "Delivery",
+            orderId,
+            "Schedule",
+            $"Scheduled for {existing.DeliveryDate:yyyy-MM-dd}",
+            "Unscheduled");
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("[DELIVERY UNSCHEDULE] Removed DeliveryScheduleId={DeliveryScheduleId} for OrderId={OrderId}.", existing.Id, orderId);

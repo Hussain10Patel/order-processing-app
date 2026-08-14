@@ -8,6 +8,7 @@ namespace OrderProcessingApp.Services;
 public class ProductionService : IProductionService
 {
     private readonly AppDbContext _dbContext;
+    private readonly IAuditService _auditService;
     private readonly ILogger<ProductionService> _logger;
 
     private sealed class ProductionItemCalculation
@@ -25,9 +26,10 @@ public class ProductionService : IProductionService
         public bool UsedManualStock { get; set; }
     }
 
-    public ProductionService(AppDbContext dbContext, ILogger<ProductionService> logger)
+    public ProductionService(AppDbContext dbContext, ILogger<ProductionService> logger, IAuditService? auditService = null)
     {
         _dbContext = dbContext;
+        _auditService = auditService ?? new AuditService(dbContext);
         _logger = logger;
     }
 
@@ -388,6 +390,21 @@ public class ProductionService : IProductionService
             throw new InvalidOperationException($"Duplicate production decisions found for order item IDs: {string.Join(", ", duplicateItemIds)}.");
         }
 
+        var originalDecisionStatesByItemId = new Dictionary<int, bool?>();
+        foreach (var decisionDto in dto.Decisions)
+        {
+            if (!itemIds.Contains(decisionDto.OrderItemId))
+            {
+                throw new InvalidOperationException($"Order item {decisionDto.OrderItemId} does not belong to order {order.Id}.");
+            }
+
+            var originalDecision = await _dbContext.ProductionDecisions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.OrderItemId == decisionDto.OrderItemId, cancellationToken);
+
+            originalDecisionStatesByItemId[decisionDto.OrderItemId] = originalDecision is null ? null : originalDecision.IsSufficient;
+        }
+
         foreach (var decisionDto in dto.Decisions)
         {
             if (!itemIds.Contains(decisionDto.OrderItemId))
@@ -472,6 +489,39 @@ public class ProductionService : IProductionService
         }
 
         await transaction.CommitAsync(cancellationToken);
+
+        foreach (var decisionDto in dto.Decisions)
+        {
+            if (!itemIds.Contains(decisionDto.OrderItemId))
+            {
+                continue;
+            }
+
+            var hadExistingDecisionBeforeSave = originalDecisionStatesByItemId.TryGetValue(decisionDto.OrderItemId, out var previousDecisionState)
+                && previousDecisionState.HasValue;
+
+            if (hadExistingDecisionBeforeSave && previousDecisionState == decisionDto.IsSufficient)
+            {
+                continue;
+            }
+
+            var oldValue = !hadExistingDecisionBeforeSave
+                ? "Pending"
+                : (previousDecisionState!.Value ? "OK" : "Produce More");
+
+            var newValue = decisionDto.IsSufficient
+                ? "OK"
+                : $"Produce More ({calculatedByItemId[decisionDto.OrderItemId].ComputedProductionRequired:0.##})";
+
+            _auditService.TrackChange(
+                "ProductionDecision",
+                order.Id,
+                "Production Decision",
+                oldValue,
+                newValue);
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         var lines = dto.Decisions
             .Where(x => calculatedByItemId.ContainsKey(x.OrderItemId))
