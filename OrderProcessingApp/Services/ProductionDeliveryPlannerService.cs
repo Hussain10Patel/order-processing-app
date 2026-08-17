@@ -88,10 +88,29 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             throw new InvalidOperationException("Only order events can update delivery dates.");
         }
 
-        plannerEvent.PlannedDeliveryDate = dto.DeliveryDate.HasValue
-            ? DateTime.SpecifyKind(dto.DeliveryDate.Value.Date, DateTimeKind.Unspecified)
-            : null;
+        if (!plannerEvent.OrderId.HasValue)
+        {
+            throw new InvalidOperationException("Order event is missing an OrderId.");
+        }
+
+        if (!dto.DeliveryDate.HasValue)
+        {
+            throw new InvalidOperationException("Delivery date is required.");
+        }
+
+        var order = await _dbContext.Orders
+            .FirstOrDefaultAsync(x => x.Id == plannerEvent.OrderId.Value, cancellationToken);
+
+        if (order is null)
+        {
+            throw new KeyNotFoundException($"Order not found. OrderId={plannerEvent.OrderId.Value}.");
+        }
+
+        var normalizedDate = DateTime.SpecifyKind(dto.DeliveryDate.Value.Date, DateTimeKind.Unspecified);
+
+        plannerEvent.PlannedDeliveryDate = normalizedDate;
         plannerEvent.UpdatedAt = Now();
+        order.DeliveryDate = normalizedDate;
 
         await TouchPlanAsync(context.Plan);
         await _dbContext.SaveChangesAsync(cancellationToken);

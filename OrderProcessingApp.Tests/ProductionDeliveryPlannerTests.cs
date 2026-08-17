@@ -5,6 +5,7 @@ using OrderProcessingApp.Data;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Models;
 using OrderProcessingApp.Services;
+using System.Text;
 using Xunit;
 
 namespace OrderProcessingApp.Tests;
@@ -287,6 +288,89 @@ public class ProductionDeliveryPlannerTests
         Assert.Contains(report.DeliverySummary, row => row.PoNumber == fixture.Order1.OrderNumber);
     }
 
+    [Fact]
+    public async Task SaveDateUpdatesPlannerAndOrderAndPropagatesAcrossCalendarDeliveryReportsExportsAndScheduling()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var originalDate = fixture.Order1.DeliveryDate.Date;
+        var newDate = new DateTime(2026, 8, 20);
+
+        var planner = fixture.CreatePlannerService();
+        var initialPlan = await planner.GetCurrentPlanAsync();
+        var orderEvent = Assert.Single(initialPlan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        await planner.UpdateOrderDeliveryDateAsync(orderEvent.Id, new ProductionDeliveryPlanDeliveryDateUpdateDto
+        {
+            DeliveryDate = newDate
+        });
+
+        var reloadedPlan = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        var reloadedOrderEvent = Assert.Single(reloadedPlan.Events, x => x.OrderId == fixture.Order1.Id);
+        Assert.Equal("2026-08-20", reloadedOrderEvent.PlannedDeliveryDate);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id);
+            var plannerOrderEvent = await db.ProductionDeliveryPlanEvents.SingleAsync(x => x.Id == reloadedOrderEvent.Id);
+
+            Assert.Equal(newDate.Date, order.DeliveryDate.Date);
+            Assert.Equal(newDate.Date, plannerOrderEvent.PlannedDeliveryDate!.Value.Date);
+        }
+
+        var productionService = fixture.CreateProductionService();
+        var oldCalendar = await productionService.GetCalendarAsync(originalDate, originalDate);
+        Assert.DoesNotContain(oldCalendar.SelectMany(x => x.ScheduledItems).Concat(oldCalendar.SelectMany(x => x.UnscheduledItems)), x => x.OrderId == fixture.Order1.Id);
+
+        var newCalendar = await productionService.GetCalendarAsync(newDate, newDate);
+        Assert.Contains(newCalendar.SelectMany(x => x.ScheduledItems).Concat(newCalendar.SelectMany(x => x.UnscheduledItems)), x => x.OrderId == fixture.Order1.Id);
+
+        var deliveryService = fixture.CreateDeliveryService();
+        var unscheduled = await deliveryService.GetUnscheduledOrdersByDateAsync(newDate);
+        var unscheduledOrder = Assert.Single(unscheduled, x => x.Id == fixture.Order1.Id);
+        Assert.Equal("2026-08-20", unscheduledOrder.DeliveryDate);
+
+        var reportService = fixture.CreateReportService();
+        var oldDateReport = await reportService.GetSummaryByDeliveryDateAsync(originalDate);
+        Assert.DoesNotContain(oldDateReport.DeliverySummary, row => row.PoNumber == fixture.Order1.OrderNumber);
+
+        var newDateReport = await reportService.GetSummaryByDeliveryDateAsync(newDate);
+        Assert.Contains(newDateReport.DeliverySummary, row => row.PoNumber == fixture.Order1.OrderNumber);
+
+        var exportService = fixture.CreateExportService();
+        var ordersExport = await exportService.ExportOrdersToExcelAsync(newDate);
+        var ordersCsv = Encoding.UTF8.GetString(ordersExport.Content);
+        Assert.Contains("ORD-100", ordersCsv);
+        Assert.Contains("2026-08-20", ordersCsv);
+
+        var pastelExportService = fixture.CreatePastelExportService();
+        var pastelExport = await pastelExportService.GenerateInvoiceFileAsync(newDate);
+        var pastelCsv = Encoding.UTF8.GetString(pastelExport.Content);
+        Assert.Contains("DC North", pastelCsv);
+        Assert.Contains("PA", pastelCsv);
+
+        var scheduled = await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, newDate, "planner schedule");
+        Assert.Equal("Scheduled", scheduled.Status);
+        Assert.Equal("2026-08-20", scheduled.DeliveryDate);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var schedule = await db.DeliverySchedules.SingleAsync(x => x.OrderId == fixture.Order1.Id);
+            var order = await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id);
+            Assert.Equal(newDate.Date, schedule.DeliveryDate.Date);
+            Assert.Equal(newDate.Date, order.DeliveryDate.Date);
+        }
+
+        var scheduledRows = await deliveryService.GetScheduleByDateAsync(newDate);
+        var scheduledOrder = Assert.Single(scheduledRows, x => x.OrderId == fixture.Order1.Id);
+        Assert.Equal("2026-08-20", scheduledOrder.DeliveryDate);
+
+        var deliveryExport = await exportService.ExportDeliveryScheduleAsync(newDate);
+        var deliveryCsv = Encoding.UTF8.GetString(deliveryExport.Content);
+        Assert.Contains("ORD-100", deliveryCsv);
+        Assert.Contains("2026-08-20", deliveryCsv);
+    }
+
     private sealed class PlannerFixture : IAsyncDisposable
     {
         public DbContextOptions<AppDbContext> Options { get; }
@@ -383,6 +467,24 @@ public class ProductionDeliveryPlannerTests
         {
             var db = new AppDbContext(Options);
             return new ReportService(db);
+        }
+
+        public ProductionService CreateProductionService()
+        {
+            var db = new AppDbContext(Options);
+            return new ProductionService(db, NullLogger<ProductionService>.Instance);
+        }
+
+        public ExportService CreateExportService()
+        {
+            var db = new AppDbContext(Options);
+            return new ExportService(db);
+        }
+
+        public PastelExportService CreatePastelExportService()
+        {
+            var db = new AppDbContext(Options);
+            return new PastelExportService(db);
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
