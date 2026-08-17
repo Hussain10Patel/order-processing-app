@@ -314,7 +314,10 @@ public class UploadController : ControllerBase
         var costPerText = GetMappedValue(values, headerMap.CostPerIndex);
         var grossCstText = GetMappedValue(values, headerMap.GrossCostIndex);
         var exetendCstText = GetMappedValue(values, headerMap.ExetendCostIndex);
+        var (selectedPriceField, selectedPriceText, priceResolutionError) = ResolveImportPriceValue(headerMap, costPerText, grossCstText, exetendCstText);
         var metadata = BuildMetadata(values, headerMap);
+
+        metadata["DetectedCsvSchema"] = headerMap.IsB2BOrders ? "B2BOrders" : "Generic";
 
         logger.LogInformation(
             "[CSV FIELD INDEX] RowNumber: {RowNumber}, RawRowText: {RawRowText}, QtyIndex: {QtyIndex}, CostperIndex: {CostperIndex}, GrossCstIndex: {GrossCstIndex}, ExetendCstIndex: {ExetendCstIndex}",
@@ -354,8 +357,11 @@ public class UploadController : ControllerBase
         if (string.IsNullOrWhiteSpace(quantityText))
             return new RowValidationError("Quantity", "Quantity is required.");
 
-        if (string.IsNullOrWhiteSpace(costPerText))
-            return new RowValidationError("Costper", "Costper is required");
+        if (!string.IsNullOrWhiteSpace(priceResolutionError))
+            return new RowValidationError("Price", priceResolutionError);
+
+        if (string.IsNullOrWhiteSpace(selectedPriceText))
+            return new RowValidationError("Price", "A supported cost field is required.");
 
         if (!TryParseDate(orderDateText, out var orderDate))
             return new RowValidationError("OrderDate", $"Invalid date: '{orderDateText}'");
@@ -372,40 +378,40 @@ public class UploadController : ControllerBase
 
         var quantity = SafeParseDecimal(quantityText, errors, fileName, lineNumber, "Quantity");
         var quantityParsed = quantity is not null;
-        var costperParsed = TryParseDecimal(costPerText, out var parsedCostPer);
+        var priceParsed = TryParseDecimal(selectedPriceText, out var parsedCostPer);
 
-        if (quantityParsed && !costperParsed)
+        if (quantityParsed && !priceParsed)
         {
             logger.LogWarning(
                 "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: (invalid), Message: Costper parse failure while Qty parsed.",
                 lineNumber,
                 rawRowText,
                 quantityText,
-                costPerText,
+                selectedPriceText,
                 quantity);
         }
 
-        if (!quantityParsed && costperParsed)
+        if (!quantityParsed && priceParsed)
         {
             logger.LogWarning(
                 "[CSV NUMERIC MAP] RowNumber: {RowNumber}, RawRowText: {RawRowText}, Qty raw: {QtyRaw}, Costper raw: {CostperRaw}, Parsed quantity: (invalid), Parsed price: {ParsedPrice}, Message: Qty parse failure while Costper parsed.",
                 lineNumber,
                 rawRowText,
                 quantityText,
-                costPerText,
+                selectedPriceText,
                 parsedCostPer);
         }
 
         if (quantity is null)
             return new RowValidationError("Quantity", $"Invalid number: '{quantityText}'");
 
-        if (!costperParsed)
-            return new RowValidationError("Costper", $"Invalid unit price '{costPerText}' at row {lineNumber}");
+        if (!priceParsed)
+            return new RowValidationError(selectedPriceField, $"Invalid unit price '{selectedPriceText}' at row {lineNumber}");
 
         var price = parsedCostPer;
 
         if (price <= 0)
-            return new RowValidationError("Costper", "Costper must be greater than 0");
+            return new RowValidationError(selectedPriceField, $"{selectedPriceField} must be greater than 0");
 
         var supplierTotalRaw = !string.IsNullOrWhiteSpace(grossCstText)
             ? grossCstText
@@ -435,6 +441,8 @@ public class UploadController : ControllerBase
 
         metadata["QtyRaw"] = quantityText;
         metadata["CostperRaw"] = costPerText;
+        metadata["ImportedPriceRaw"] = selectedPriceText;
+        metadata["ImportedPriceSource"] = selectedPriceField;
 
         if (TryParseDecimal(quantityText, out var qtyRawParsed)
             && TryParseDecimal(costPerText, out var costRawParsed)
@@ -447,17 +455,20 @@ public class UploadController : ControllerBase
                 lineNumber,
                 rawRowText,
                 quantityText,
-                costPerText,
+                selectedPriceText,
                 quantity.Value,
                 price);
         }
 
         logger.LogInformation(
-            "[CSV PRICE MAP] SKU: {Sku}, Qty raw value: {QtyRaw}, Costper raw value: {CostperRaw}, GrossCst raw value: {GrossCstRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: {ParsedPrice}",
+            "[CSV PRICE MAP] SKU: {Sku}, Schema: {Schema}, Qty raw value: {QtyRaw}, Costper raw value: {CostperRaw}, GrossCst raw value: {GrossCstRaw}, Selected price source: {SelectedPriceSource}, Selected price raw value: {SelectedPriceRaw}, Parsed quantity: {ParsedQuantity}, Parsed price: {ParsedPrice}",
             resolvedProduct,
+            headerMap.IsB2BOrders ? "B2BOrders" : "Generic",
             quantityText,
             costPerText,
             grossCstText,
+            selectedPriceField,
+            selectedPriceText,
             quantity.Value,
             price);
 
@@ -477,7 +488,7 @@ public class UploadController : ControllerBase
             lineNumber,
             rawRowText,
             quantityText,
-            costPerText,
+            selectedPriceText,
             quantity.Value,
             price);
 
@@ -666,6 +677,15 @@ public class UploadController : ControllerBase
         var grossCostIndex = FindHeaderIndexExact(normalizedHeaders, "grosscst", "gross cost", "grosscost");
         var exetendCostIndex = FindHeaderIndexExact(normalizedHeaders, "exetendcst", "extendedcst", "extendcst", "extended cost", "extend cost");
 
+        var isB2BOrders = HasHeaderExact(normalizedHeaders, "itempacksize")
+            && HasHeaderExact(normalizedHeaders, "qty")
+            && HasHeaderExact(normalizedHeaders, "costper")
+            && HasHeaderExact(normalizedHeaders, "costunitmeasure")
+            && HasHeaderExact(normalizedHeaders, "grosscst")
+            && (HasHeaderExact(normalizedHeaders, "exetendcst")
+                || HasHeaderExact(normalizedHeaders, "extendedcst")
+                || HasHeaderExact(normalizedHeaders, "extendcst"));
+
         var missingRequiredColumns = new List<string>();
         if (orderNumberIndex is null)
             missingRequiredColumns.Add("Order Number");
@@ -677,8 +697,8 @@ public class UploadController : ControllerBase
             missingRequiredColumns.Add("Product");
         if (quantityIndex is null)
             missingRequiredColumns.Add("Quantity");
-        if (costPerIndex is null)
-            missingRequiredColumns.Add("Costper");
+        if (costPerIndex is null && grossCostIndex is null && exetendCostIndex is null)
+            missingRequiredColumns.Add("Cost / GrossCst / ExetendCst");
 
         return new CsvHeaderMap(
             orderNumberIndex,
@@ -696,6 +716,7 @@ public class UploadController : ControllerBase
             costPerIndex,
             grossCostIndex,
             exetendCostIndex,
+                isB2BOrders,
             headers.ToList(),
             missingRequiredColumns);
     }
@@ -774,6 +795,43 @@ public class UploadController : ControllerBase
         return null;
     }
 
+    private static bool HasHeaderExact(IReadOnlyList<KeyValuePair<string, int>> normalizedHeaders, params string[] aliases)
+    {
+        return FindHeaderIndexExact(normalizedHeaders, aliases).HasValue;
+    }
+
+    private static (string FieldName, string Value, string? ErrorMessage) ResolveImportPriceValue(
+        CsvHeaderMap headerMap,
+        string costPerText,
+        string grossCstText,
+        string exetendCstText)
+    {
+        if (headerMap.IsB2BOrders)
+        {
+            if (!string.IsNullOrWhiteSpace(grossCstText))
+            {
+                return ("GrossCst", grossCstText, null);
+            }
+
+            return ("GrossCst", string.Empty, "B2B Orders schema requires GrossCst to determine Price safely.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(costPerText))
+        {
+            return ("Costper", costPerText, null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(grossCstText) || !string.IsNullOrWhiteSpace(exetendCstText))
+        {
+            return (
+                "Price",
+                string.Empty,
+                "Price source cannot be determined safely for this CSV schema. Provide Costper or use an explicitly supported schema.");
+        }
+
+        return ("Price", string.Empty, null);
+    }
+
     private static string NormalizeHeader(string header)
     {
         return Regex.Replace(CleanValue(header).ToLowerInvariant(), @"[^a-z0-9]+", string.Empty);
@@ -801,6 +859,7 @@ public class UploadController : ControllerBase
         int? CostPerIndex,
         int? GrossCostIndex,
         int? ExetendCostIndex,
+        bool IsB2BOrders,
         List<string> Headers,
         List<string> MissingRequiredColumns);
 

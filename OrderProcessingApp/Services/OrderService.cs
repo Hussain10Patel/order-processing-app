@@ -689,6 +689,12 @@ public class OrderService : IOrderService
         metadata["CsvRawCostper"] = row.Metadata.TryGetValue("CostperRaw", out var costperRaw)
             ? costperRaw
             : row.Price.ToString(CultureInfo.InvariantCulture);
+        metadata["ImportedPriceRaw"] = row.Metadata.TryGetValue("ImportedPriceRaw", out var importedPriceRaw)
+            ? importedPriceRaw
+            : row.Price.ToString(CultureInfo.InvariantCulture);
+        metadata["ImportedPriceSource"] = row.Metadata.TryGetValue("ImportedPriceSource", out var importedPriceSource)
+            ? importedPriceSource
+            : "Costper";
         metadata["GrossCstRaw"] = row.Metadata.TryGetValue("GrossCstRaw", out var grossCstRaw)
             ? grossCstRaw
             : string.Empty;
@@ -711,6 +717,12 @@ public class OrderService : IOrderService
 
     private static decimal ResolveCsvUnitPrice(CsvOrderRowDto row)
     {
+        if (row.Metadata.TryGetValue("ImportedPriceRaw", out var importedPriceRaw)
+            && TryParseInvariantDecimal(importedPriceRaw, out var parsedImportedPrice))
+        {
+            return parsedImportedPrice;
+        }
+
         if (row.Metadata.TryGetValue("CostperRaw", out var rawCostper)
             && TryParseInvariantDecimal(rawCostper, out var parsedCostper))
         {
