@@ -18,6 +18,9 @@ public class AppDbContext : DbContext
     public DbSet<PricePromotion> PricePromotions => Set<PricePromotion>();
     public DbSet<ProductionPlan> ProductionPlans => Set<ProductionPlan>();
     public DbSet<ProductionDecision> ProductionDecisions => Set<ProductionDecision>();
+    public DbSet<ProductionDeliveryPlan> ProductionDeliveryPlans => Set<ProductionDeliveryPlan>();
+    public DbSet<ProductionDeliveryPlanEvent> ProductionDeliveryPlanEvents => Set<ProductionDeliveryPlanEvent>();
+    public DbSet<ProductionDeliveryPlanEventLine> ProductionDeliveryPlanEventLines => Set<ProductionDeliveryPlanEventLine>();
     public DbSet<Stock> Stocks => Set<Stock>();
     public DbSet<DeliverySchedule> DeliverySchedules => Set<DeliverySchedule>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
@@ -192,6 +195,55 @@ public class AppDbContext : DbContext
                 .WithMany(x => x.ProductionDecisions)
                 .HasForeignKey(x => x.OrderItemId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProductionDeliveryPlan>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Name).IsUnique();
+            entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.CreatedAt).IsRequired();
+            entity.Property(x => x.UpdatedAt).IsRequired();
+        });
+
+        modelBuilder.Entity<ProductionDeliveryPlanEvent>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.PlanId, x.Sequence }).IsUnique();
+            entity.HasIndex(x => new { x.PlanId, x.OrderId }).IsUnique();
+            entity.Property(x => x.EventType).HasConversion<int>();
+            entity.Property(x => x.PlannedDeliveryDate).HasColumnType("timestamp without time zone");
+            entity.Property(x => x.CreatedAt).IsRequired();
+            entity.Property(x => x.UpdatedAt).IsRequired();
+
+            entity.HasOne(x => x.Plan)
+                .WithMany(x => x.Events)
+                .HasForeignKey(x => x.PlanId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.Order)
+                .WithMany()
+                .HasForeignKey(x => x.OrderId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ProductionDeliveryPlanEventLine>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.EventId, x.ProductId }).IsUnique();
+            entity.Property(x => x.Quantity).HasPrecision(18, 2);
+            entity.Property(x => x.CreatedAt).IsRequired();
+            entity.Property(x => x.UpdatedAt).IsRequired();
+
+            entity.HasOne(x => x.Event)
+                .WithMany(x => x.Lines)
+                .HasForeignKey(x => x.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.Product)
+                .WithMany()
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
             modelBuilder.Entity<Stock>(entity =>

@@ -361,6 +361,49 @@ export async function getProductionCalendar(fromDate, toDate) {
   });
 }
 
+export async function getProductionDeliveryPlan() {
+  return request("/api/production-delivery", { method: "GET" });
+}
+
+export async function updateProductionDeliveryOpeningStock(quantities) {
+  return request("/api/production-delivery/opening-stock", {
+    method: "PUT",
+    body: JSON.stringify({ quantities }),
+  });
+}
+
+export async function addProductionDeliveryProductionEvent(afterEventId) {
+  return request(`/api/production-delivery/events/${afterEventId}/production`, {
+    method: "POST",
+  });
+}
+
+export async function addProductionDeliveryStockAdjustmentEvent(afterEventId) {
+  return request(`/api/production-delivery/events/${afterEventId}/adjustment`, {
+    method: "POST",
+  });
+}
+
+export async function updateProductionDeliveryEventQuantities(eventId, quantities) {
+  return request(`/api/production-delivery/events/${eventId}/quantities`, {
+    method: "PUT",
+    body: JSON.stringify({ quantities }),
+  });
+}
+
+export async function updateProductionDeliveryOrderDate(eventId, deliveryDate) {
+  return request(`/api/production-delivery/events/${eventId}/delivery-date`, {
+    method: "PUT",
+    body: JSON.stringify({ deliveryDate: deliveryDate || null }),
+  });
+}
+
+export async function deleteProductionDeliveryEvent(eventId) {
+  return request(`/api/production-delivery/events/${eventId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function saveProductionDecision(payload) {
   return request("/api/production/decision", {
     method: "POST",

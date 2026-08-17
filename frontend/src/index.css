@@ -1050,6 +1050,92 @@ tr.row-unmapped-product {
   white-space: nowrap;
 }
 
+.production-delivery-page {
+  display: grid;
+  gap: 16px;
+}
+
+.production-delivery-table-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.production-delivery-table-wrap {
+  overflow: auto;
+}
+
+.production-delivery-table {
+  min-width: 1400px;
+}
+
+.production-delivery-table th,
+.production-delivery-table td {
+  vertical-align: middle;
+}
+
+.sticky-col {
+  position: sticky;
+  background: #fff;
+  z-index: 2;
+}
+
+.sticky-col-1 {
+  left: 0;
+  min-width: 180px;
+}
+
+.sticky-col-2 {
+  left: 180px;
+  min-width: 170px;
+}
+
+.sticky-col-3 {
+  left: 350px;
+  min-width: 140px;
+}
+
+.sticky-col-4 {
+  left: 490px;
+  min-width: 160px;
+}
+
+.sticky-action-col {
+  position: sticky;
+  right: 0;
+  min-width: 220px;
+  background: #fff;
+  z-index: 2;
+}
+
+.production-delivery-table thead .sticky-col,
+.production-delivery-table thead .sticky-action-col {
+  background: var(--panel-soft);
+  z-index: 3;
+}
+
+.action-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stock-stack {
+  display: grid;
+  gap: 2px;
+}
+
+.stock-after-row {
+  background: #f8fbfd;
+}
+
+.opening-row {
+  background: #eefbf8;
+}
+
+.shortage-cell strong {
+  color: var(--danger);
+}
+
 .order-info-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

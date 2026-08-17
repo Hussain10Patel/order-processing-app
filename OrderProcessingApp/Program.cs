@@ -48,6 +48,7 @@ builder.Services.AddScoped<IPalletService, PalletService>();
 builder.Services.AddScoped<IPendingCsvImportService, PendingCsvImportService>();
 builder.Services.AddScoped<IPlanningService, PlanningService>();
 builder.Services.AddScoped<IProductionService, ProductionService>();
+builder.Services.AddScoped<IProductionDeliveryPlannerService, ProductionDeliveryPlannerService>();
 builder.Services.AddScoped<IDeliveryService, DeliveryService>();
 builder.Services.AddScoped<IReportService, ReportService>();
 builder.Services.AddScoped<IExportService, ExportService>();

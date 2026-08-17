@@ -4,6 +4,7 @@ import AdminPage from "./pages/AdminPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import OrdersPage from "./pages/OrdersPage";
 import ProductionCalendarPage from "./pages/ProductionCalendarPage";
+import ProductionDeliveryPage from "./pages/ProductionDeliveryPage";
 import ProductionPage from "./pages/ProductionPage";
 import ReportsPage from "./pages/ReportsPage";
 import UploadCsvPage from "./pages/UploadCsvPage";
@@ -16,6 +17,7 @@ function App() {
         <Route path="/dashboard" element={<OrdersPage />} />
         <Route path="/upload" element={<UploadCsvPage />} />
         <Route path="/production" element={<ProductionPage />} />
+        <Route path="/production-delivery" element={<ProductionDeliveryPage />} />
         <Route path="/production-calendar" element={<ProductionCalendarPage />} />
         <Route path="/delivery" element={<DeliveryPage />} />
         <Route path="/reports" element={<ReportsPage />} />
