@@ -74,6 +74,19 @@ function getDecisionLabel(item) {
   return "No production required";
 }
 
+function getWeekDates(dateInput) {
+  const baseDate = new Date(`${dateInput || toLocalYMD(new Date())}T00:00:00`);
+  const dayIndex = (baseDate.getDay() + 6) % 7;
+  const monday = new Date(baseDate);
+  monday.setDate(baseDate.getDate() - dayIndex);
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const nextDate = new Date(monday);
+    nextDate.setDate(monday.getDate() + index);
+    return toLocalYMD(nextDate);
+  });
+}
+
 function ProductionCalendarPage() {
   const [selectedDate, setSelectedDate] = useState(toLocalYMD(new Date()));
   const [calendarView, setCalendarView] = useState("month");
@@ -121,10 +134,31 @@ function ProductionCalendarPage() {
     month: "long",
     year: "numeric",
   });
+  const weekDates = useMemo(() => getWeekDates(selectedDate), [selectedDate]);
 
   function moveMonth(offset) {
     const nextMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + offset, 1);
     setSelectedDate(toLocalYMD(nextMonth));
+  }
+
+  function moveSelectedDate(offset) {
+    const nextDate = new Date(`${selectedDate}T00:00:00`);
+    nextDate.setDate(nextDate.getDate() + offset);
+    setSelectedDate(toLocalYMD(nextDate));
+  }
+
+  function moveView(offset) {
+    if (calendarView === "week") {
+      moveSelectedDate(offset * 7);
+      return;
+    }
+
+    if (calendarView === "day") {
+      moveSelectedDate(offset);
+      return;
+    }
+
+    moveMonth(offset);
   }
 
   function handleCellClick(dateValue) {
@@ -146,10 +180,10 @@ function ProductionCalendarPage() {
       <div className="panel production-calendar-top-panel">
         <div className="production-calendar-toolbar">
           <div className="calendar-toolbar-group left-group">
-            <button type="button" className="secondary calendar-nav-button" onClick={() => moveMonth(-1)} aria-label="Previous month">
+            <button type="button" className="secondary calendar-nav-button" onClick={() => moveView(-1)} aria-label={calendarView === "month" ? "Previous month" : calendarView === "week" ? "Previous week" : "Previous day"}>
               ‹
             </button>
-            <button type="button" className="secondary calendar-nav-button" onClick={() => moveMonth(1)} aria-label="Next month">
+            <button type="button" className="secondary calendar-nav-button" onClick={() => moveView(1)} aria-label={calendarView === "month" ? "Next month" : calendarView === "week" ? "Next week" : "Next day"}>
               ›
             </button>
             <button type="button" className="secondary" onClick={() => setSelectedDate(toLocalYMD(new Date()))}>Today</button>
@@ -157,7 +191,7 @@ function ProductionCalendarPage() {
 
           <div className="calendar-toolbar-title">
             <span className="calendar-icon" aria-hidden="true">📅</span>
-            <strong>{monthLabel}</strong>
+            <strong>{calendarView === "month" ? monthLabel : calendarView === "week" ? `${new Date(`${weekDates[0]}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${new Date(`${weekDates[6]}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : new Date(`${selectedDate}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</strong>
           </div>
 
           <div className="calendar-toolbar-input">
@@ -216,81 +250,216 @@ function ProductionCalendarPage() {
 
       {!loading && !error && (
         <>
-          <div className="panel production-calendar-month-panel">
-            <div className="calendar-weekdays">
-              {weekdayLabels.map((label) => (
-                <div key={label} className="calendar-weekday">
-                  {label}
-                </div>
-              ))}
-            </div>
+          {calendarView === "month" && (
+            <div className="panel production-calendar-month-panel">
+              <div className="calendar-weekdays">
+                {weekdayLabels.map((label) => (
+                  <div key={label} className="calendar-weekday">
+                    {label}
+                  </div>
+                ))}
+              </div>
 
-            <div className="calendar-month-grid">
-              {calendarDays.map((dateValue, index) => {
-                const dateKey = dateValue ? toLocalYMD(dateValue) : "";
-                const day = dateKey ? calendarByDate[dateKey] : null;
-                const scheduledCount = day ? day.scheduledItems.length : 0;
-                const unscheduledCount = day ? day.unscheduledItems.length : 0;
-                const totalCount = scheduledCount + unscheduledCount;
-                const isSelected = dateKey === selectedDate;
-                const isMuted = dateValue && dateValue.getMonth() !== monthStart.getMonth();
+              <div className="calendar-month-grid">
+                {calendarDays.map((dateValue, index) => {
+                  const dateKey = dateValue ? toLocalYMD(dateValue) : "";
+                  const day = dateKey ? calendarByDate[dateKey] : null;
+                  const scheduledCount = day ? day.scheduledItems.length : 0;
+                  const unscheduledCount = day ? day.unscheduledItems.length : 0;
+                  const totalCount = scheduledCount + unscheduledCount;
+                  const isSelected = dateKey === selectedDate;
+                  const isMuted = dateValue && dateValue.getMonth() !== monthStart.getMonth();
 
-                return (
-                  <button
-                    key={dateKey || `empty-${index}`}
-                    type="button"
-                    onClick={() => handleCellClick(dateKey)}
-                    className={[
-                      "calendar-day-cell",
-                      dateValue ? "has-date" : "empty-cell",
-                      isSelected ? "selected" : "",
-                      isMuted ? "muted" : "",
-                      totalCount > 0 ? "has-work" : "",
-                    ].filter(Boolean).join(" ")}
-                  >
-                    {dateValue ? (
-                      <>
-                        <div className="calendar-day-header">
-                          <span className="calendar-day-number">{dateValue.getDate()}</span>
-                          {totalCount > 0 && <span className="calendar-badge">{totalCount}</span>}
-                        </div>
-
-                        {totalCount > 0 ? (
-                          <div className="calendar-day-body">
-                            {scheduledCount > 0 && (
-                              <div className="calendar-day-stat scheduled-stat">
-                                {scheduledCount} scheduled
-                              </div>
-                            )}
-                            {unscheduledCount > 0 && (
-                              <div className="calendar-day-stat unscheduled-stat">
-                                {unscheduledCount} unscheduled
-                              </div>
-                            )}
-
-                            <div className="calendar-day-preview">
-                              {day && day.scheduledItems.slice(0, 1).map((item) => (
-                                <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
-                                  {item.orderNumber}: {item.productName}
-                                </div>
-                              ))}
-                              {day && day.unscheduledItems.slice(0, 1).map((item) => (
-                                <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
-                                  {item.orderNumber}: {item.productName}
-                                </div>
-                              ))}
-                            </div>
+                  return (
+                    <button
+                      key={dateKey || `empty-${index}`}
+                      type="button"
+                      onClick={() => handleCellClick(dateKey)}
+                      className={[
+                        "calendar-day-cell",
+                        dateValue ? "has-date" : "empty-cell",
+                        isSelected ? "selected" : "",
+                        isMuted ? "muted" : "",
+                        totalCount > 0 ? "has-work" : "",
+                      ].filter(Boolean).join(" ")}
+                    >
+                      {dateValue ? (
+                        <>
+                          <div className="calendar-day-header">
+                            <span className="calendar-day-number">{dateValue.getDate()}</span>
+                            {totalCount > 0 && <span className="calendar-badge">{totalCount}</span>}
                           </div>
-                        ) : (
-                          <div className="calendar-day-empty">No production work</div>
-                        )}
-                      </>
-                    ) : null}
-                  </button>
-                );
-              })}
+
+                          {totalCount > 0 ? (
+                            <div className="calendar-day-body">
+                              {scheduledCount > 0 && (
+                                <div className="calendar-day-stat scheduled-stat">
+                                  {scheduledCount} scheduled
+                                </div>
+                              )}
+                              {unscheduledCount > 0 && (
+                                <div className="calendar-day-stat unscheduled-stat">
+                                  {unscheduledCount} unscheduled
+                                </div>
+                              )}
+
+                              <div className="calendar-day-preview">
+                                {day && day.scheduledItems.slice(0, 1).map((item) => (
+                                  <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                    {item.orderNumber}: {item.productName}
+                                  </div>
+                                ))}
+                                {day && day.unscheduledItems.slice(0, 1).map((item) => (
+                                  <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                    {item.orderNumber}: {item.productName}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="calendar-day-empty">No production work</div>
+                          )}
+                        </>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
+
+          {calendarView === "week" && (
+            <div className="panel production-calendar-week-panel">
+              <div className="calendar-week-grid">
+                {weekDates.map((dateKey) => {
+                  const day = calendarByDate[dateKey] || { scheduledItems: [], unscheduledItems: [] };
+                  const scheduledCount = day.scheduledItems.length;
+                  const unscheduledCount = day.unscheduledItems.length;
+                  const totalCount = scheduledCount + unscheduledCount;
+                  const dateValue = new Date(`${dateKey}T00:00:00`);
+                  const isSelected = dateKey === selectedDate;
+
+                  return (
+                    <button
+                      key={dateKey}
+                      type="button"
+                      onClick={() => setSelectedDate(dateKey)}
+                      className={[
+                        "calendar-week-day-card",
+                        isSelected ? "selected" : "",
+                        totalCount > 0 ? "has-work" : "",
+                      ].filter(Boolean).join(" ")}
+                    >
+                      <div className="calendar-week-day-header">
+                        <span className="calendar-weekday-name">{weekdayLabels[(dateValue.getDay() + 6) % 7]}</span>
+                        <span className="calendar-week-date">{dateValue.getDate()}</span>
+                      </div>
+
+                      {totalCount > 0 ? (
+                        <>
+                          {scheduledCount > 0 && (
+                            <div className="calendar-week-stat scheduled-stat">{scheduledCount} scheduled</div>
+                          )}
+                          {unscheduledCount > 0 && (
+                            <div className="calendar-week-stat unscheduled-stat">{unscheduledCount} unscheduled</div>
+                          )}
+                          <div className="calendar-week-preview">
+                            {day.scheduledItems.slice(0, 1).map((item) => (
+                              <div key={`${dateKey}-scheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                {item.orderNumber}: {item.productName}
+                              </div>
+                            ))}
+                            {day.unscheduledItems.slice(0, 1).map((item) => (
+                              <div key={`${dateKey}-unscheduled-${item.orderId}-${item.orderItemId}`} className="calendar-preview-item">
+                                {item.orderNumber}: {item.productName}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="calendar-day-empty">No production work</div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {calendarView === "day" && (
+            <div className="panel production-calendar-day-panel">
+              <div className="calendar-day-hero">
+                <div>
+                  <div className="calendar-day-hero-label">Selected date</div>
+                  <h3>{formatFriendlyDate(selectedDate)}</h3>
+                </div>
+              </div>
+
+              {selectedItems.length === 0 ? (
+                <p className="status-text">No production work</p>
+              ) : (
+                <div className="production-detail-groups">
+                  {selectedDay.scheduledItems.length > 0 && (
+                    <div className="production-detail-group scheduled-group">
+                      <h4>Scheduled ({selectedDay.scheduledItems.length})</h4>
+                      <div className="production-items-list">
+                        {selectedDay.scheduledItems.map((item) => (
+                          <article key={`scheduled-${item.orderId}-${item.orderItemId}`} className="production-item-card scheduled-card">
+                            <div className="production-item-main">
+                              <div className="production-item-order">{item.orderNumber}</div>
+                              <span className="status-chip success">{item.status}</span>
+                            </div>
+                            <div className="production-item-product">{item.productName}</div>
+                            <div className="production-item-meta">
+                              <span>{formatNumber(item.quantity)} pcs</span>
+                              {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
+                            </div>
+                            {item.hasCurrentProductionCalculation && (
+                              <div className="production-item-note">Required production: {formatNumber(item.currentRequiredProductionQty)}</div>
+                            )}
+                            {(item.hasCurrentProductionCalculation || item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined) && (
+                              <div className="production-item-note">
+                                Production decision: {getDecisionLabel(item)}
+                              </div>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedDay.unscheduledItems.length > 0 && (
+                    <div className="production-detail-group unscheduled-group">
+                      <h4>Unscheduled ({selectedDay.unscheduledItems.length})</h4>
+                      <div className="production-items-list">
+                        {selectedDay.unscheduledItems.map((item) => (
+                          <article key={`unscheduled-${item.orderId}-${item.orderItemId}`} className="production-item-card unscheduled-card">
+                            <div className="production-item-main">
+                              <div className="production-item-order">{item.orderNumber}</div>
+                              <span className="status-chip warning">{item.status}</span>
+                            </div>
+                            <div className="production-item-product">{item.productName}</div>
+                            <div className="production-item-meta">
+                              <span>{formatNumber(item.quantity)} pcs</span>
+                              {item.distributionCentreName && <span>{item.distributionCentreName}</span>}
+                            </div>
+                            {item.hasCurrentProductionCalculation && (
+                              <div className="production-item-note">Required production: {formatNumber(item.currentRequiredProductionQty)}</div>
+                            )}
+                            {(item.hasCurrentProductionCalculation || item.decisionIsSufficient !== null && item.decisionIsSufficient !== undefined) && (
+                              <div className="production-item-note">
+                                Production decision: {getDecisionLabel(item)}
+                              </div>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="panel production-calendar-detail-panel">
             <div className="production-detail-header">
