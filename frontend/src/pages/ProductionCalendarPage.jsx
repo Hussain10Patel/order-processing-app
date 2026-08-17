@@ -76,6 +76,7 @@ function getDecisionLabel(item) {
 
 function ProductionCalendarPage() {
   const [selectedDate, setSelectedDate] = useState(toLocalYMD(new Date()));
+  const [calendarView, setCalendarView] = useState("month");
   const [calendarByDate, setCalendarByDate] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -171,13 +172,28 @@ function ProductionCalendarPage() {
         </div>
 
         <div className="calendar-view-switcher" aria-label="Calendar view selector">
-          <button type="button" className="calendar-view-button active" disabled>
+          <button
+            type="button"
+            className={calendarView === "month" ? "calendar-view-button active" : "calendar-view-button"}
+            onClick={() => setCalendarView("month")}
+            aria-pressed={calendarView === "month"}
+          >
             Month
           </button>
-          <button type="button" className="calendar-view-button" disabled>
+          <button
+            type="button"
+            className={calendarView === "week" ? "calendar-view-button active" : "calendar-view-button"}
+            onClick={() => setCalendarView("week")}
+            aria-pressed={calendarView === "week"}
+          >
             Week
           </button>
-          <button type="button" className="calendar-view-button" disabled>
+          <button
+            type="button"
+            className={calendarView === "day" ? "calendar-view-button active" : "calendar-view-button"}
+            onClick={() => setCalendarView("day")}
+            aria-pressed={calendarView === "day"}
+          >
             Day
           </button>
         </div>
