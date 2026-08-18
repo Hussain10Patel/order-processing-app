@@ -15,6 +15,8 @@ public class Order
     public decimal TotalValue { get; set; }
     public decimal TotalPallets { get; set; }
 
+    public bool IsExcludedFromPlan { get; set; } = false;
+
     public DistributionCentre? DistributionCentre { get; set; }
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public ICollection<DeliverySchedule> DeliverySchedules { get; set; } = new List<DeliverySchedule>();

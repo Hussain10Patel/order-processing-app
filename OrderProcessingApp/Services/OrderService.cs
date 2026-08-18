@@ -4,7 +4,6 @@ using OrderProcessingApp.Data;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Models;
 using System.Globalization;
-
 namespace OrderProcessingApp.Services;
 
 public class OrderService : IOrderService
@@ -1589,8 +1588,69 @@ public class OrderService : IOrderService
             throw new InvalidOperationException($"Order '{order.OrderNumber}' cannot be deleted because status is '{order.Status}'. Only orders before Processed can be deleted.");
         }
 
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        // ---- Phase 1: remove planner events, schedule, soft-delete order ----
+
+        // Remove the order's Production/Delivery planner event and any owned child events
+        var planEvent = await _dbContext.ProductionDeliveryPlanEvents
+            .Include(x => x.Lines)
+            .FirstOrDefaultAsync(x => x.EventType == ProductionDeliveryPlanEventType.Order
+                                   && x.OrderId == id, cancellationToken);
+
+        int? planId = planEvent?.PlanId;
+
+        if (planEvent is not null)
+        {
+            // Remove Production and StockAdjustment events owned by this order
+            var ownedEvents = await _dbContext.ProductionDeliveryPlanEvents
+                .Include(x => x.Lines)
+                .Where(x => x.OwnerOrderId == id)
+                .ToListAsync(cancellationToken);
+
+            foreach (var owned in ownedEvents)
+            {
+                _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(owned.Lines);
+                _dbContext.ProductionDeliveryPlanEvents.Remove(owned);
+            }
+
+            _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(planEvent.Lines);
+            _dbContext.ProductionDeliveryPlanEvents.Remove(planEvent);
+        }
+
+        // Remove active DeliverySchedule
+        var schedule = await _dbContext.DeliverySchedules
+            .FirstOrDefaultAsync(x => x.OrderId == id, cancellationToken);
+
+        if (schedule is not null)
+        {
+            _dbContext.DeliverySchedules.Remove(schedule);
+        }
+
         order.IsActive = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        // ---- Phase 2: renumber planner sequence if we removed events ----
+        if (planId.HasValue)
+        {
+            var remainingEvents = await _dbContext.ProductionDeliveryPlanEvents
+                .Where(x => x.PlanId == planId.Value)
+                .OrderBy(x => x.Sequence)
+                .ThenBy(x => x.Id)
+                .ToListAsync(cancellationToken);
+
+            var seq = 1;
+            var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+            foreach (var ev in remainingEvents)
+            {
+                ev.Sequence = seq++;
+                ev.UpdatedAt = now;
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<OrderItemSwapAuditResponseDto> AuditHistoricalSwappedOrderItemsAsync(

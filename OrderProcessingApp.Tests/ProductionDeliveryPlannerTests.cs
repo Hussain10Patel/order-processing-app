@@ -371,8 +371,806 @@ public class ProductionDeliveryPlannerTests
         Assert.Contains("2026-08-20", deliveryCsv);
     }
 
-    private sealed class PlannerFixture : IAsyncDisposable
+    // ----------------------------------------------------------------
+    // OWNER ORDER ID
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task AddProductionEventSetsOwnerOrderId()
     {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        await planner.AddProductionEventAsync(order1Event.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var prodEvent = await db.ProductionDeliveryPlanEvents
+            .SingleAsync(x => x.EventType == ProductionDeliveryPlanEventType.Production);
+
+        Assert.Equal(fixture.Order1.Id, prodEvent.OwnerOrderId);
+    }
+
+    [Fact]
+    public async Task AddStockAdjustmentEventSetsOwnerOrderId()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        await planner.AddStockAdjustmentEventAsync(order1Event.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var adjEvent = await db.ProductionDeliveryPlanEvents
+            .SingleAsync(x => x.EventType == ProductionDeliveryPlanEventType.StockAdjustment);
+
+        Assert.Equal(fixture.Order1.Id, adjEvent.OwnerOrderId);
+    }
+
+    // ----------------------------------------------------------------
+    // ORPHAN CLEANUP
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task GetCurrentPlanRemovesOrphanOrderEventForInactiveOrder()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        // Create a plan with Order1 event, then soft-delete Order1 directly in DB
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync(); // seeds plan
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+            order.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        // Reload: orphan Order event should be removed
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+
+        Assert.DoesNotContain(reloaded.Events, x => x.OrderId == fixture.Order1.Id);
+        Assert.DoesNotContain(reloaded.Events, x => x.EventType == "Order" && x.OrderNumber == null);
+    }
+
+    [Fact]
+    public async Task GetCurrentPlanRemovesOwnedProductionEventsWithOrphanOrderEvent()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Add a Production event owned by Order1
+        await planner.AddProductionEventAsync(order1Event.Id);
+
+        // Soft-delete Order1 directly
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+            order.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+
+        // Both the Order event and its owned Production event must be gone
+        Assert.DoesNotContain(reloaded.Events, x => x.OrderId == fixture.Order1.Id);
+        Assert.DoesNotContain(reloaded.Events, x => x.EventType == "Production");
+    }
+
+    [Fact]
+    public async Task GetCurrentPlanKeepsUnownedProductionEventsWhenOrphanOrderCleaned()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Add Production after Order1 (will have OwnerOrderId = Order1.Id)
+        var afterAdd = await planner.AddProductionEventAsync(order1Event.Id);
+        var prod1 = Assert.Single(afterAdd.Events, x => x.EventType == "Production");
+
+        // Manually create an UNOWNED Production event (OwnerOrderId = null) after Order2
+        var order2Event = Assert.Single(afterAdd.Events, x => x.OrderId == fixture.Order2.Id);
+        await planner.AddProductionEventAsync(order2Event.Id);
+
+        // Set the second production's OwnerOrderId to null to simulate legacy unowned event
+        await using (var db = fixture.CreateDbContext())
+        {
+            var secondProd = await db.ProductionDeliveryPlanEvents
+                .Where(x => x.EventType == ProductionDeliveryPlanEventType.Production && x.OwnerOrderId == fixture.Order2.Id)
+                .FirstAsync();
+            secondProd.OwnerOrderId = null;
+            await db.SaveChangesAsync();
+        }
+
+        // Soft-delete Order1
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+            order.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+
+        // Owned production (Order1's) should be gone
+        Assert.DoesNotContain(reloaded.Events, x => x.Id == prod1.Id);
+        // Unowned production should remain
+        Assert.Single(reloaded.Events, x => x.EventType == "Production");
+    }
+
+    [Fact]
+    public async Task GetCurrentPlanIsIdempotentAfterOrphanCleanup()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        // Soft-delete Order1
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+            order.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        var first = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        var second = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+
+        // Running again must not create any new events or duplicate anything
+        Assert.Equal(first.Events.Count, second.Events.Count);
+        Assert.DoesNotContain(second.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    // ----------------------------------------------------------------
+    // ACTUAL ORDER DELETE (via OrderService)
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task DeleteOrderRemovesPlannerEventAndSequenceIsRepaired()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync(); // seeds plan
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        // Reload plan via fresh planner service
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+
+        Assert.DoesNotContain(reloaded.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Sequences must be contiguous with no gaps
+        var sequences = reloaded.Events.Select(x => x.Sequence).OrderBy(x => x).ToList();
+        for (var i = 0; i < sequences.Count; i++)
+        {
+            Assert.Equal(i + 1, sequences[i]);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteOrderRemovesOwnedProductionEvents()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Add two Production events for Order1
+        await planner.AddProductionEventAsync(order1Event.Id);
+        var afterSecond = await planner.GetCurrentPlanAsync();
+        var prodEvent = Assert.Single(afterSecond.Events, x => x.EventType == "Production");
+        await planner.AddProductionEventAsync(prodEvent.Id);
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var remainingProduction = await db.ProductionDeliveryPlanEvents
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Production)
+            .ToListAsync();
+
+        Assert.Empty(remainingProduction);
+    }
+
+    [Fact]
+    public async Task DeleteOrderPreservesUnownedProductionEvents()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Add Production owned by Order1
+        await planner.AddProductionEventAsync(order1Event.Id);
+
+        // Manually create an UNOWNED Production event
+        await using (var db = fixture.CreateDbContext())
+        {
+            var planEntity = await db.ProductionDeliveryPlans.FirstAsync();
+            var maxSeq = await db.ProductionDeliveryPlanEvents.MaxAsync(x => x.Sequence);
+            db.ProductionDeliveryPlanEvents.Add(new ProductionDeliveryPlanEvent
+            {
+                PlanId = planEntity.Id,
+                Sequence = maxSeq + 1,
+                EventType = ProductionDeliveryPlanEventType.Production,
+                OwnerOrderId = null,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        await using var db2 = fixture.CreateDbContext();
+        var remaining = await db2.ProductionDeliveryPlanEvents
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Production)
+            .ToListAsync();
+
+        // The unowned event must survive
+        Assert.Single(remaining);
+        Assert.Null(remaining[0].OwnerOrderId);
+    }
+
+    [Fact]
+    public async Task DeleteOrderRemovesDeliverySchedule()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        // Schedule Order1 first
+        var deliveryService = fixture.CreateDeliveryService();
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            Assert.True(await db.DeliverySchedules.AnyAsync(x => x.OrderId == fixture.Order1.Id));
+        }
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        await using var db2 = fixture.CreateDbContext();
+        Assert.False(await db2.DeliverySchedules.AnyAsync(x => x.OrderId == fixture.Order1.Id));
+    }
+
+    [Fact]
+    public async Task DeletedOrderExcludedFromDeliveryPage()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var deliveryService = fixture.CreateDeliveryService();
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        var schedules = await deliveryService.GetScheduleByDateAsync(fixture.Order1.DeliveryDate);
+        Assert.DoesNotContain(schedules, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    [Fact]
+    public async Task DeletedOrderExcludedFromDeliveryExport()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var deliveryService = fixture.CreateDeliveryService();
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        var exportService = fixture.CreateExportService();
+        var export = await exportService.ExportDeliveryScheduleAsync(fixture.Order1.DeliveryDate);
+        var csv = Encoding.UTF8.GetString(export.Content);
+        Assert.DoesNotContain(fixture.Order1.OrderNumber, csv);
+    }
+
+    [Fact]
+    public async Task DeletedOrderNotInActiveReports()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        var reportService = fixture.CreateReportService();
+        var summary = await reportService.GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate);
+        Assert.DoesNotContain(summary.DeliverySummary, x => x.PoNumber == fixture.Order1.OrderNumber);
+    }
+
+    // ----------------------------------------------------------------
+    // REMOVE FROM PLAN / ADD TO PLAN
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task RemoveFromPlanDoesNotDeleteOrder()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var order = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+        Assert.True(order.IsActive);
+        Assert.True(order.IsExcludedFromPlan);
+    }
+
+    [Fact]
+    public async Task RemoveFromPlanRemovesPlannerRepresentation()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        var afterRemove = await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+        Assert.DoesNotContain(afterRemove.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    [Fact]
+    public async Task RemoveFromPlanRemovesOwnedProductionEvents()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        await planner.AddProductionEventAsync(order1Event.Id);
+        await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var remaining = await db.ProductionDeliveryPlanEvents
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Production)
+            .ToListAsync();
+        Assert.Empty(remaining);
+    }
+
+    [Fact]
+    public async Task RemoveFromPlanDoesNotReappearOnNextLoad()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+        await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+
+        // Reload — excluded order must NOT auto-reappear
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        Assert.DoesNotContain(reloaded.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    [Fact]
+    public async Task AddToPlanRestoresOrderToPlan()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+        await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+
+        var restored = await planner.AddToPlanAsync(fixture.Order1.Id);
+        Assert.Single(restored.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    [Fact]
+    public async Task AddToPlanDoesNotCreateDuplicateEvents()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+        await planner.RemoveFromPlanAsync(fixture.Order1.Id);
+        await planner.AddToPlanAsync(fixture.Order1.Id);
+
+        // Calling AddToPlan a second time must not create a duplicate
+        var plan = await planner.AddToPlanAsync(fixture.Order1.Id);
+        Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    // ----------------------------------------------------------------
+    // RE-UPLOAD AFTER DELETE
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task ReUploadAfterDeleteSucceedsAndNewOrderHasCleanPlannerState()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        // Build plan for Order1 with a Production event
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+        await planner.AddProductionEventAsync(order1Event.Id);
+
+        // Delete Order1 via OrderService
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        // Re-create an order with the same OrderNumber (simulating CSV re-upload)
+        int newOrderId;
+        await using (var db = fixture.CreateDbContext())
+        {
+            var newOrder = new Order
+            {
+                OrderNumber = fixture.Order1.OrderNumber, // same number
+                OrderDate = fixture.Order1.OrderDate,
+                DeliveryDate = fixture.Order1.DeliveryDate,
+                DistributionCentreId = fixture.Order1.DistributionCentreId,
+                Source = OrderSource.CSV,
+                Status = OrderStatus.Approved,
+                IsActive = true,
+                TotalValue = 0m,
+                TotalPallets = 0m
+            };
+            newOrder.Items.Add(new OrderItem
+            {
+                ProductId = fixture.ProductA.Id,
+                ProductCode = fixture.ProductA.SKUCode,
+                ProductName = fixture.ProductA.Name,
+                Quantity = 100m,
+                Price = 1m,
+                Pallets = 0m,
+                MetadataJson = "{}"
+            });
+            db.Orders.Add(newOrder);
+            await db.SaveChangesAsync();
+            newOrderId = newOrder.Id;
+        }
+
+        // Old inactive order must not block the new active one
+        await using (var db = fixture.CreateDbContext())
+        {
+            var activeOrders = await db.Orders.Where(x => x.OrderNumber == fixture.Order1.OrderNumber).ToListAsync();
+            Assert.Single(activeOrders);
+            Assert.Equal(newOrderId, activeOrders[0].Id);
+        }
+
+        // New order must have no stale planner events from the old order
+        await using (var db = fixture.CreateDbContext())
+        {
+            var staleEvents = await db.ProductionDeliveryPlanEvents
+                .Where(x => x.OrderId == fixture.Order1.Id)
+                .ToListAsync();
+            Assert.Empty(staleEvents);
+        }
+
+        // Loading the plan adds the new order and does not have orphan events
+        var freshPlan = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        Assert.Single(freshPlan.Events, x => x.OrderId == newOrderId);
+        Assert.DoesNotContain(freshPlan.Events, x => x.OrderId == fixture.Order1.Id);
+    }
+
+    // ----------------------------------------------------------------
+    // SEQUENCE INTEGRITY AFTER DELETE
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task DeleteMiddleOrderLeavesContiguousSequence()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var plan = await db.ProductionDeliveryPlans.FirstAsync();
+        var sequences = await db.ProductionDeliveryPlanEvents
+            .Where(x => x.PlanId == plan.Id)
+            .OrderBy(x => x.Sequence)
+            .Select(x => x.Sequence)
+            .ToListAsync();
+
+        for (var i = 0; i < sequences.Count; i++)
+        {
+            Assert.Equal(i + 1, sequences[i]);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteLastOrderLeavesContiguousSequence()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        await planner.GetCurrentPlanAsync();
+
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order2.Id);
+
+        await using var db = fixture.CreateDbContext();
+        var plan = await db.ProductionDeliveryPlans.FirstAsync();
+        var sequences = await db.ProductionDeliveryPlanEvents
+            .Where(x => x.PlanId == plan.Id)
+            .OrderBy(x => x.Sequence)
+            .Select(x => x.Sequence)
+            .ToListAsync();
+
+        for (var i = 0; i < sequences.Count; i++)
+        {
+            Assert.Equal(i + 1, sequences[i]);
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // DOWNSTREAM STOCK AFTER DELETE
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task DeleteOrderRecalculatesDownstreamStockForRemainingOrders()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        // Opening stock: 50 for ProductA
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+
+        // Order1 demands 100 → StockAfter = -50
+        // Order2 demands 20  → StockAfter = -70
+        var order2Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order2.Id);
+        Assert.Equal(-70m, order2Event.StockAfter.Single(x => x.ProductId == fixture.ProductA.Id).Quantity);
+
+        // Delete Order1
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        var reloadedOrder2 = Assert.Single(reloaded.Events, x => x.OrderId == fixture.Order2.Id);
+
+        // Now only Order2 drawn from opening stock 50 → StockAfter = 30
+        Assert.Equal(30m, reloadedOrder2.StockAfter.Single(x => x.ProductId == fixture.ProductA.Id).Quantity);
+    }
+
+    // ----------------------------------------------------------------
+    // TRANSACTION ROLLBACK SAFETY
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task SoftDeleteOrderThrowsForProcessedStatus()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var order = await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id);
+            order.Status = OrderStatus.Processed;
+            await db.SaveChangesAsync();
+        }
+
+        var orderService = fixture.CreateOrderService();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => orderService.SoftDeleteOrderAsync(fixture.Order1.Id));
+
+        // Order must remain active
+        await using var db2 = fixture.CreateDbContext();
+        var unchanged = await db2.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == fixture.Order1.Id);
+        Assert.True(unchanged.IsActive);
+    }
+
+    // ----------------------------------------------------------------
+    // CSV RE-UPLOAD — REAL IMPORT PATH
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task CsvReUploadAfterDeleteUsesRealImportPath()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        const string orderNumber = "ORD-CSV-REUPLOAD-001";
+
+        var csvRow = new CsvOrderRowDto
+        {
+            FileName = "test.csv",
+            RowNumber = 1,
+            OrderNumber = orderNumber,
+            OrderDate = new DateTime(2026, 8, 10),
+            DeliveryDate = new DateTime(2026, 8, 14),
+            DistributionCentre = "DC North",        // matches the fixture DC
+            ProductCode = fixture.ProductA.SKUCode,  // "PA"
+            ProductName = fixture.ProductA.Name,
+            Quantity = 50m,
+            Price = 1.0m,
+            Metadata = new Dictionary<string, string>()
+        };
+
+        // ---- FIRST IMPORT ----
+        var orderService = fixture.CreateFullOrderService();
+        var first = await orderService.CreateOrdersFromCsvRowsAsync(
+            new List<CsvOrderRowDto> { csvRow },
+            allowDuplicates: false,
+            createMissingProducts: false);
+
+        Assert.Equal(1, first.Result.CreatedOrders);
+        Assert.Empty(first.Result.ValidationErrors);
+
+        int firstOrderId;
+        await using (var db = fixture.CreateDbContext())
+        {
+            var created = await db.Orders.IgnoreQueryFilters()
+                .SingleAsync(x => x.OrderNumber == orderNumber);
+            firstOrderId = created.Id;
+            Assert.True(created.IsActive);
+            Assert.False(created.IsExcludedFromPlan);
+        }
+
+        // Approve so it is planner-eligible
+        await orderService.ApproveOrderAsync(firstOrderId);
+
+        var planner = fixture.CreatePlannerService();
+        var planWithFirst = await planner.GetCurrentPlanAsync();
+        Assert.Single(planWithFirst.Events, x => x.OrderId == firstOrderId);
+
+        // ---- DELETE ----
+        await orderService.SoftDeleteOrderAsync(firstOrderId);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var inactive = await db.Orders.IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == firstOrderId);
+            Assert.False(inactive.IsActive);
+
+            // Planner event removed by SoftDeleteOrderAsync
+            Assert.False(await db.ProductionDeliveryPlanEvents
+                .AnyAsync(x => x.OrderId == firstOrderId));
+        }
+
+        // ---- SECOND IMPORT — SAME ORDER NUMBER ----
+        var second = await orderService.CreateOrdersFromCsvRowsAsync(
+            new List<CsvOrderRowDto> { csvRow },
+            allowDuplicates: false,
+            createMissingProducts: false);
+
+        // Must succeed — no duplicate-OrderNumber error
+        Assert.Equal(1, second.Result.CreatedOrders);
+        Assert.Empty(second.Result.ValidationErrors);
+
+        int secondOrderId;
+        await using (var db = fixture.CreateDbContext())
+        {
+            // Old inactive record still present
+            var old = await db.Orders.IgnoreQueryFilters().SingleAsync(x => x.Id == firstOrderId);
+            Assert.False(old.IsActive);
+
+            // New active record exists
+            var activeList = await db.Orders
+                .Where(x => x.OrderNumber == orderNumber)
+                .ToListAsync();
+            var newOrder = Assert.Single(activeList);
+            secondOrderId = newOrder.Id;
+            Assert.NotEqual(firstOrderId, secondOrderId);
+            Assert.True(newOrder.IsActive);
+            Assert.False(newOrder.IsExcludedFromPlan);
+
+            // No stale planner events from the old order
+            Assert.False(await db.ProductionDeliveryPlanEvents
+                .AnyAsync(x => x.OrderId == firstOrderId));
+        }
+
+        // Approve new order and confirm it appears in the planner
+        await orderService.ApproveOrderAsync(secondOrderId);
+
+        var freshPlanner = fixture.CreatePlannerService();
+        var planWithSecond = await freshPlanner.GetCurrentPlanAsync();
+
+        Assert.Single(planWithSecond.Events, x => x.OrderId == secondOrderId);
+        Assert.DoesNotContain(planWithSecond.Events, x => x.OrderId == firstOrderId);
+    }
+
+    // ----------------------------------------------------------------
+    // STOCK ADJUSTMENT OWNED DELETE
+    // ----------------------------------------------------------------
+
+    [Fact]
+    public async Task DeleteOrderRemovesOwnedStockAdjustmentAndProductionEvents()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+
+        var planner = fixture.CreatePlannerService();
+        var plan = await planner.GetCurrentPlanAsync();
+        var order1Event = Assert.Single(plan.Events, x => x.OrderId == fixture.Order1.Id);
+
+        // Add an owned Production event and an owned StockAdjustment event for Order1
+        await planner.AddProductionEventAsync(order1Event.Id);
+        var planAfterProd = await planner.GetCurrentPlanAsync();
+        var prodEvent = Assert.Single(planAfterProd.Events, x => x.EventType == "Production");
+
+        await planner.AddStockAdjustmentEventAsync(order1Event.Id);
+        var planAfterAdj = await planner.GetCurrentPlanAsync();
+        Assert.Single(planAfterAdj.Events, x => x.EventType == "StockAdjustment");
+
+        // Confirm both are owned by Order1
+        await using (var db = fixture.CreateDbContext())
+        {
+            var ownedProd = await db.ProductionDeliveryPlanEvents
+                .SingleAsync(x => x.EventType == ProductionDeliveryPlanEventType.Production);
+            Assert.Equal(fixture.Order1.Id, ownedProd.OwnerOrderId);
+
+            var ownedAdj = await db.ProductionDeliveryPlanEvents
+                .SingleAsync(x => x.EventType == ProductionDeliveryPlanEventType.StockAdjustment);
+            Assert.Equal(fixture.Order1.Id, ownedAdj.OwnerOrderId);
+        }
+
+        // Also create an UNOWNED legacy Production event (OwnerOrderId = null)
+        await using (var db = fixture.CreateDbContext())
+        {
+            var planEntity = await db.ProductionDeliveryPlans.FirstAsync();
+            var maxSeq = await db.ProductionDeliveryPlanEvents.MaxAsync(x => x.Sequence);
+            db.ProductionDeliveryPlanEvents.Add(new ProductionDeliveryPlanEvent
+            {
+                PlanId = planEntity.Id,
+                Sequence = maxSeq + 1,
+                EventType = ProductionDeliveryPlanEventType.Production,
+                OwnerOrderId = null,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Delete Order1 via real SoftDeleteOrderAsync
+        var orderService = fixture.CreateOrderService();
+        await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
+
+        await using var db2 = fixture.CreateDbContext();
+
+        // Order event removed
+        Assert.False(await db2.ProductionDeliveryPlanEvents
+            .AnyAsync(x => x.OrderId == fixture.Order1.Id));
+
+        // Owned Production event removed
+        Assert.False(await db2.ProductionDeliveryPlanEvents
+            .AnyAsync(x => x.Id == prodEvent.Id));
+
+        // Owned StockAdjustment event removed
+        Assert.False(await db2.ProductionDeliveryPlanEvents
+            .AnyAsync(x => x.EventType == ProductionDeliveryPlanEventType.StockAdjustment));
+
+        // Unowned Production event (OwnerOrderId = null) survives
+        var surviving = await db2.ProductionDeliveryPlanEvents
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Production)
+            .ToListAsync();
+        Assert.Single(surviving);
+        Assert.Null(surviving[0].OwnerOrderId);
+
+        // Remaining sequences are contiguous
+        var plan2 = await db2.ProductionDeliveryPlans.FirstAsync();
+        var seqs = await db2.ProductionDeliveryPlanEvents
+            .Where(x => x.PlanId == plan2.Id)
+            .OrderBy(x => x.Sequence)
+            .Select(x => x.Sequence)
+            .ToListAsync();
+        for (var i = 0; i < seqs.Count; i++)
+        {
+            Assert.Equal(i + 1, seqs[i]);
+        }
+    }
+
+    private sealed class PlannerFixture : IAsyncDisposable    {
         public DbContextOptions<AppDbContext> Options { get; }
         public Product ProductA { get; }
         public Product ProductB { get; }
@@ -457,6 +1255,44 @@ public class ProductionDeliveryPlannerTests
             return new ProductionDeliveryPlannerService(db, new StubProductionService(db));
         }
 
+        public OrderService CreateOrderService()
+        {
+            var db = new AppDbContext(Options);
+            return new OrderService(
+                db,
+                null!,
+                null!,
+                null!,
+                null!,
+                null!,
+                new AuditService(db),
+                NullLogger<OrderService>.Instance);
+        }
+
+        /// <summary>
+        /// Creates a fully-wired OrderService using real service implementations,
+        /// suitable for testing CreateOrdersFromCsvRowsAsync and ApproveOrderAsync.
+        /// </summary>
+        public OrderService CreateFullOrderService()
+        {
+            var db = new AppDbContext(Options);
+            var pricingService = new PricingService(db, NullLogger<PricingService>.Instance);
+            var palletService = new PalletService(db);
+            var planningService = new PlanningService(db);
+            var distributionCentreResolver = new DistributionCentreResolver(db, NullLogger<DistributionCentreResolver>.Instance);
+            var stockService = new StockService(db);
+            var auditService = new AuditService(db);
+            return new OrderService(
+                db,
+                pricingService,
+                palletService,
+                planningService,
+                distributionCentreResolver,
+                stockService,
+                auditService,
+                NullLogger<OrderService>.Instance);
+        }
+
         public DeliveryService CreateDeliveryService()
         {
             var db = new AppDbContext(Options);
@@ -505,7 +1341,8 @@ public class ProductionDeliveryPlannerTests
                     .Include(x => x.DistributionCentre)
                     .Include(x => x.Items)
                         .ThenInclude(x => x.Product)
-                    .Where(x => x.Status == OrderStatus.Approved || x.Status == OrderStatus.InProduction || x.Status == OrderStatus.Processed)
+                    .Where(x => (x.Status == OrderStatus.Approved || x.Status == OrderStatus.InProduction || x.Status == OrderStatus.Processed)
+                             && !x.IsExcludedFromPlan)
                     .OrderBy(x => x.DeliveryDate)
                     .ThenBy(x => x.OrderNumber)
                     .ToListAsync(cancellationToken);

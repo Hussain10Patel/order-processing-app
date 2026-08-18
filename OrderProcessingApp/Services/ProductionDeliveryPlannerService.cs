@@ -22,9 +22,16 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
     {
         var context = await LoadContextAsync(cancellationToken);
         await EnsureOpeningStockAsync(context.Plan, context.Products, cancellationToken);
-        await EnsureOrderEventsAsync(context.Plan, context.EligibleOrders, context.SchedulesByOrderId, cancellationToken);
+        var hadOrphans = await EnsureOrderEventsAsync(context.Plan, context.EligibleOrders, context.SchedulesByOrderId, cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        if (hadOrphans)
+        {
+            await RenumberEventsAsync(context.Plan.Id, cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
         return await BuildPlanDtoAsync(context, cancellationToken);
     }
 
@@ -142,6 +149,93 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         return await BuildPlanDtoAsync(context, cancellationToken);
     }
 
+    public async Task<ProductionDeliveryPlanDto> RemoveFromPlanAsync(int orderId, CancellationToken cancellationToken = default)
+    {
+        var context = await LoadContextAsync(cancellationToken);
+
+        var order = await _dbContext.Orders
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
+        }
+
+        // Remove the Order's planner event
+        var planEvent = context.Plan.Events
+            .FirstOrDefault(x => x.EventType == ProductionDeliveryPlanEventType.Order && x.OrderId == orderId);
+
+        if (planEvent is not null)
+        {
+            // Remove owned Production and StockAdjustment events first
+            var ownedEvents = context.Plan.Events
+                .Where(x => x.OwnerOrderId == orderId)
+                .ToList();
+
+            foreach (var owned in ownedEvents)
+            {
+                _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(owned.Lines);
+                _dbContext.ProductionDeliveryPlanEvents.Remove(owned);
+                context.Plan.Events.Remove(owned);
+            }
+
+            _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(planEvent.Lines);
+            _dbContext.ProductionDeliveryPlanEvents.Remove(planEvent);
+            context.Plan.Events.Remove(planEvent);
+        }
+
+        order.IsExcludedFromPlan = true;
+
+        await RenumberEventsAsync(context.Plan.Id, cancellationToken);
+        await TouchPlanAsync(context.Plan);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await BuildPlanDtoAsync(context, cancellationToken);
+    }
+
+    public async Task<ProductionDeliveryPlanDto> AddToPlanAsync(int orderId, CancellationToken cancellationToken = default)
+    {
+        var orderEntity = await _dbContext.Orders
+            .FirstOrDefaultAsync(x => x.Id == orderId, cancellationToken);
+
+        if (orderEntity is null)
+        {
+            throw new KeyNotFoundException($"Order not found or inactive. OrderId={orderId}.");
+        }
+
+        if (!OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(orderEntity.Status))
+        {
+            throw new InvalidOperationException($"Order is not eligible for the Production/Delivery planner. Status: {orderEntity.Status}.");
+        }
+
+        orderEntity.IsExcludedFromPlan = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        // Delegate to GetCurrentPlanAsync which will auto-add via EnsureOrderEventsAsync
+        return await GetCurrentPlanAsync(cancellationToken);
+    }
+
+    public async Task<List<OrderExcludedFromPlanDto>> GetExcludedOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        var excluded = await _dbContext.Orders
+            .AsNoTracking()
+            .Include(x => x.DistributionCentre)
+            .Where(x => x.IsExcludedFromPlan
+                     && OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(x.Status))
+            .OrderBy(x => x.DeliveryDate)
+            .ThenBy(x => x.OrderNumber)
+            .ToListAsync(cancellationToken);
+
+        return excluded.Select(o => new OrderExcludedFromPlanDto
+        {
+            Id = o.Id,
+            OrderNumber = o.OrderNumber,
+            DistributionCentre = o.DistributionCentre?.Name ?? string.Empty,
+            DeliveryDate = o.DeliveryDate.ToString("yyyy-MM-dd"),
+            Status = o.Status.ToString()
+        }).ToList();
+    }
+
     private async Task<PlannerContext> LoadContextAsync(CancellationToken cancellationToken)
     {
         var productionSnapshot = await _productionService.GetProductionAsync(null, cancellationToken);
@@ -171,6 +265,14 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             throw new KeyNotFoundException($"Planner event not found. EventId={afterEventId}.");
         }
 
+        // Determine ownership: find the nearest Order event at or before afterEvent's sequence
+        var ownerOrderEvent = context.Plan.Events
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Order
+                     && x.Sequence <= afterEvent.Sequence)
+            .OrderByDescending(x => x.Sequence)
+            .FirstOrDefault();
+        var ownerOrderId = ownerOrderEvent?.OrderId;
+
         var newSequence = afterEvent.Sequence + 1;
         await ShiftSequencesAsync(context.Plan.Id, newSequence, cancellationToken);
 
@@ -180,6 +282,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             PlanId = context.Plan.Id,
             Sequence = newSequence,
             EventType = eventType,
+            OwnerOrderId = ownerOrderId,
             CreatedAt = now,
             UpdatedAt = now
         });
@@ -266,21 +369,67 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         return openingEvent;
     }
 
-    private async Task EnsureOrderEventsAsync(
+    private async Task<bool> EnsureOrderEventsAsync(
         ProductionDeliveryPlan plan,
         IReadOnlyList<ProductionOrderDto> eligibleOrders,
         IReadOnlyDictionary<int, DeliverySchedule> schedulesByOrderId,
         CancellationToken cancellationToken)
     {
         var now = Now();
+
+        // Load order IDs explicitly excluded from plan
+        var excludedIds = (await _dbContext.Orders
+            .AsNoTracking()
+            .Where(x => x.IsExcludedFromPlan)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken))
+            .ToHashSet();
+
         var existingOrderEvents = plan.Events
             .Where(x => x.EventType == ProductionDeliveryPlanEventType.Order && x.OrderId.HasValue)
             .ToDictionary(x => x.OrderId!.Value, x => x);
+
+        // CLEANUP: Remove orphan Order events for orders that are no longer eligible
+        // (inactive/soft-deleted, wrong status, or otherwise absent from eligibleOrders)
+        var eligibleOrderIds = eligibleOrders.Select(x => x.OrderId).ToHashSet();
+        var orphanEvents = plan.Events
+            .Where(x => x.EventType == ProductionDeliveryPlanEventType.Order
+                     && x.OrderId.HasValue
+                     && !eligibleOrderIds.Contains(x.OrderId.Value))
+            .ToList();
+
+        foreach (var orphan in orphanEvents)
+        {
+            // Also remove any Production/StockAdjustment events owned by this orphan order
+            var ownedEvents = plan.Events
+                .Where(x => x.OwnerOrderId == orphan.OrderId)
+                .ToList();
+
+            foreach (var owned in ownedEvents)
+            {
+                _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(owned.Lines);
+                _dbContext.ProductionDeliveryPlanEvents.Remove(owned);
+                plan.Events.Remove(owned);
+            }
+
+            _dbContext.ProductionDeliveryPlanEventLines.RemoveRange(orphan.Lines);
+            _dbContext.ProductionDeliveryPlanEvents.Remove(orphan);
+            plan.Events.Remove(orphan);
+            existingOrderEvents.Remove(orphan.OrderId!.Value);
+        }
+
+        var hadOrphans = orphanEvents.Count > 0;
 
         var nextSequence = plan.Events.Count == 0 ? 0 : plan.Events.Max(x => x.Sequence);
 
         foreach (var order in eligibleOrders)
         {
+            // Skip orders explicitly excluded from the plan
+            if (excludedIds.Contains(order.OrderId))
+            {
+                continue;
+            }
+
             if (existingOrderEvents.TryGetValue(order.OrderId, out var existingEvent))
             {
                 var plannedDate = ResolvePlannedDeliveryDate(order, schedulesByOrderId.ContainsKey(order.OrderId));
@@ -305,6 +454,8 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
                 UpdatedAt = now
             });
         }
+
+        return hadOrphans;
     }
 
     private async Task SyncQuantitiesAsync(

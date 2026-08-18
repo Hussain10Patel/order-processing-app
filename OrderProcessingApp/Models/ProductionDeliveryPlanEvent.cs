@@ -7,6 +7,7 @@ public class ProductionDeliveryPlanEvent
     public int Sequence { get; set; }
     public ProductionDeliveryPlanEventType EventType { get; set; }
     public int? OrderId { get; set; }
+    public int? OwnerOrderId { get; set; }
     public DateTime? PlannedDeliveryDate { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }

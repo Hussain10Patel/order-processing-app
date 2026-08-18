@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Services;
-
 namespace OrderProcessingApp.Controllers;
 
 [ApiController]
@@ -124,5 +123,48 @@ public class ProductionDeliveryController : ControllerBase
         {
             return BadRequest(new { message = ex.Message });
         }
+    }
+
+    [HttpDelete("orders/{orderId:int}")]
+    public async Task<ActionResult<ProductionDeliveryPlanDto>> RemoveFromPlan(int orderId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _plannerService.RemoveFromPlanAsync(orderId, cancellationToken);
+            return Ok(result);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("orders/{orderId:int}")]
+    public async Task<ActionResult<ProductionDeliveryPlanDto>> AddToPlan(int orderId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _plannerService.AddToPlanAsync(orderId, cancellationToken);
+            return Ok(result);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("excluded-orders")]
+    public async Task<ActionResult<List<OrderExcludedFromPlanDto>>> GetExcludedOrders(CancellationToken cancellationToken)
+    {
+        var result = await _plannerService.GetExcludedOrdersAsync(cancellationToken);
+        return Ok(result);
     }
 }

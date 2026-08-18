@@ -404,6 +404,22 @@ export async function deleteProductionDeliveryEvent(eventId) {
   });
 }
 
+export async function removeOrderFromPlan(orderId) {
+  return request(`/api/production-delivery/orders/${orderId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function addOrderToPlan(orderId) {
+  return request(`/api/production-delivery/orders/${orderId}`, {
+    method: "POST",
+  });
+}
+
+export async function getExcludedOrdersFromPlan() {
+  return request("/api/production-delivery/excluded-orders", { method: "GET" });
+}
+
 export async function saveProductionDecision(payload) {
   return request("/api/production/decision", {
     method: "POST",

@@ -1,9 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
+  addOrderToPlan,
   addProductionDeliveryProductionEvent,
   addProductionDeliveryStockAdjustmentEvent,
   deleteProductionDeliveryEvent,
+  getExcludedOrdersFromPlan,
   getProductionDeliveryPlan,
+  removeOrderFromPlan,
   scheduleDelivery,
   updateProductionDeliveryEventQuantities,
   updateProductionDeliveryOpeningStock,
@@ -48,14 +51,21 @@ function ProductionDeliveryPage() {
   const [saving, setSaving] = useState({});
   const [schedulingId, setSchedulingId] = useState(null);
   const [pendingDates, setPendingDates] = useState({});
+  const [excludedOrders, setExcludedOrders] = useState([]);
+  const [removingFromPlan, setRemovingFromPlan] = useState(null);
+  const [addingToPlan, setAddingToPlan] = useState(null);
 
   async function loadPlan() {
     setLoading(true);
     setError("");
 
     try {
-      const response = await getProductionDeliveryPlan();
+      const [response, excluded] = await Promise.all([
+        getProductionDeliveryPlan(),
+        getExcludedOrdersFromPlan(),
+      ]);
       setPlan(response);
+      setExcludedOrders(excluded || []);
 
       const nextDates = {};
       (response?.events || []).forEach((event) => {
@@ -170,6 +180,26 @@ function ProductionDeliveryPage() {
       await loadPlan();
     } finally {
       setEventSaving(eventId, "delete", false);
+    }
+  }
+
+  async function handleRemoveFromPlan(orderId) {
+    setRemovingFromPlan(orderId);
+    try {
+      await removeOrderFromPlan(orderId);
+      await loadPlan();
+    } finally {
+      setRemovingFromPlan(null);
+    }
+  }
+
+  async function handleAddToPlan(orderId) {
+    setAddingToPlan(orderId);
+    try {
+      await addOrderToPlan(orderId);
+      await loadPlan();
+    } finally {
+      setAddingToPlan(null);
     }
   }
 
@@ -316,6 +346,11 @@ function ProductionDeliveryPage() {
                               {isSaving(event.id, "delete") ? "Deleting..." : "Delete"}
                             </button>
                           )}
+                          {isOrder && event.orderId && (
+                            <button type="button" className="danger" onClick={() => void handleRemoveFromPlan(event.orderId)} disabled={removingFromPlan === event.orderId}>
+                              {removingFromPlan === event.orderId ? "Removing..." : "Remove from Plan"}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -357,6 +392,45 @@ function ProductionDeliveryPage() {
           </table>
         </div>
       </div>
+
+      {excludedOrders.length > 0 && (
+        <div className="panel" style={{ marginTop: "1.5rem" }}>
+          <h3 style={{ margin: "0 0 0.75rem" }}>Orders Removed from Plan</h3>
+          <p style={{ margin: "0 0 0.75rem", color: "#666", fontSize: "0.9em" }}>
+            These orders are active but have been removed from the Production / Delivery plan. Click Add to Plan to restore them.
+          </p>
+          <table className="orders-table" style={{ width: "100%" }}>
+            <thead>
+              <tr>
+                <th>Order No.</th>
+                <th>DC</th>
+                <th>Delivery Date</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {excludedOrders.map((order) => (
+                <tr key={order.id}>
+                  <td>{order.orderNumber}</td>
+                  <td>{order.distributionCentre}</td>
+                  <td>{formatDate(order.deliveryDate)}</td>
+                  <td>{order.status}</td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => void handleAddToPlan(order.id)}
+                      disabled={addingToPlan === order.id}
+                    >
+                      {addingToPlan === order.id ? "Adding..." : "Add to Plan"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

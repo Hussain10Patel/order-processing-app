@@ -189,7 +189,7 @@ public class DeliveryService : IDeliveryService
                 .Include(x => x.Order)
                     .ThenInclude(x => x!.Items)
                         .ThenInclude(x => x.Product)
-                .Where(x => x.Order != null);
+                .Where(x => x.Order != null && x.Order.IsActive);
 
             var schedules = await query
                 .OrderBy(x => x.Order!.DistributionCentre!.Name)

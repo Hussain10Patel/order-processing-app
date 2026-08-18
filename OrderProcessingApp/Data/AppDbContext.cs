@@ -48,6 +48,7 @@ public class AppDbContext : DbContext
             entity.Property(x => x.Notes).HasMaxLength(1000);
             entity.Property(x => x.IsAdjusted).HasDefaultValue(false);
             entity.Property(x => x.IsActive).HasDefaultValue(true);
+            entity.Property(x => x.IsExcludedFromPlan).HasDefaultValue(false);
             entity.Property(x => x.TotalValue).HasPrecision(18, 2);
             entity.Property(x => x.TotalPallets).HasPrecision(18, 2);
             entity.HasQueryFilter(x => x.IsActive);
@@ -225,6 +226,12 @@ public class AppDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(x => x.OrderId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<Order>()
+                .WithMany()
+                .HasForeignKey(x => x.OwnerOrderId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .IsRequired(false);
         });
 
         modelBuilder.Entity<ProductionDeliveryPlanEventLine>(entity =>

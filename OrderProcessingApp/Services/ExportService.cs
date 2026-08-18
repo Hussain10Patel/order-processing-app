@@ -75,7 +75,8 @@ public class ExportService : IExportService
                 .ThenInclude(x => x!.DistributionCentre)
             .Include(x => x.Order)
                 .ThenInclude(x => x!.Items)
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end)
+            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end
+                     && x.Order != null && x.Order.IsActive)
             .OrderBy(x => x.Order!.DistributionCentre!.Name)
             .ThenBy(x => x.Order!.OrderNumber)
             .ToListAsync(cancellationToken);
