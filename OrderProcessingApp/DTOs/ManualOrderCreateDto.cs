@@ -11,8 +11,7 @@ public class ManualOrderCreateDto
     [Required]
     public DateTime OrderDate { get; set; }
 
-    [Required]
-    public DateTime DeliveryDate { get; set; }
+    public DateTime? DeliveryDate { get; set; }
 
     [Range(1, int.MaxValue)]
     public int DistributionCentreId { get; set; }

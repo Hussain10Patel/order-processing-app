@@ -146,6 +146,31 @@ export async function getOrders(filters = {}) {
   return request(`/api/orders${toQueryString(filters)}`, { method: "GET" });
 }
 
+export async function getProductionAssignmentOrders(filters = {}) {
+  const searchParams = new URLSearchParams();
+
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+
+    if (key === "distributionCentreIds" && Array.isArray(value)) {
+      value.forEach((id) => searchParams.append(key, String(id)));
+      return;
+    }
+
+    searchParams.append(key, String(value));
+  });
+
+  const query = searchParams.toString();
+  return request(`/api/production-assignment/orders${query ? `?${query}` : ""}`, { method: "GET" });
+}
+
+export async function setOrderDeliveryDate(orderId, deliveryDate) {
+  return request(`/api/production-assignment/orders/${orderId}`, {
+    method: "PUT",
+    body: JSON.stringify({ deliveryDate }),
+  });
+}
+
 export async function getOrderById(id) {
   return request(`/api/orders/${id}`, { method: "GET" });
 }

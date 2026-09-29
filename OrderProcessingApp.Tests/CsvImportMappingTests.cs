@@ -38,6 +38,7 @@ public class CsvImportMappingTests
         Assert.Equal(2, orders.Count);
 
         var firstOrder = Assert.Single(orders, x => x.OrderNumber == "1204466650");
+        Assert.Equal(new DateTime(2026, 4, 2), firstOrder.DeliveryDate);
         var firstItem = Assert.Single(firstOrder.Items);
         Assert.Equal(448m, firstItem.Quantity);
         Assert.Equal(424.28m, firstItem.Price);
@@ -69,6 +70,10 @@ public class CsvImportMappingTests
         secondOrder.Status = OrderStatus.Approved;
         await db.SaveChangesAsync();
 
+        var assignedRows = await new ProductionAssignmentService(db)
+            .GetApprovedOrdersAsync("assigned", null, null, null, null, null, null);
+        Assert.Contains(assignedRows, row => row.OrderNumber == "1204466650" && row.IsAssigned);
+
         var production = await fixture.CreateProductionService().GetProductionAsync(null);
         var productionOrder = Assert.Single(production.Orders, x => x.OrderNumber == "1204466650");
         var productionItem = Assert.Single(productionOrder.Items);
@@ -85,6 +90,41 @@ public class CsvImportMappingTests
         Assert.Contains("|448|424,28|", ordersCsv);
         Assert.Contains("1204466651", ordersCsv);
         Assert.Contains("|120|199,55|", ordersCsv);
+    }
+
+    [Fact]
+    public async Task UploadCsv_B2BBlankDropDate_PersistsNullDeliveryDate()
+    {
+        await using var fixture = await CsvImportFixture.CreateAsync();
+
+        const string csv =
+            "OrderNo|Vendor|Depot|OrderDate|DropDate|OrderCode|Buyer|Dept|SubDept|DestID|DestDesc|DestEAN|ItemNum|ItemDesc|Barcode|SuppItemNo|WHOrderInd|ItemPackSize|Qty|ContractNo|Costper|CostUnitMeasure|GrossCst|ExetendCst|Freestock\n" +
+            "1204466653|SAMS TISSUE PRODUCTS (PTY) LTD|SAMS TISSUE PRODUCTS (PTY) LTD|2026/03/27||N|594182|||G962|DC NELLWYN JOHANNESBURG|6001000000003|6001001361005|TOILET PAPER TEST|6001001361005|| |2|17||9.00|EA|3.40||0\n";
+
+        var result = await fixture.UploadCsvAsync(csv);
+        Assert.Equal(1, result.CreatedOrders);
+        Assert.Empty(result.ValidationErrors);
+
+        await using var db = fixture.CreateDbContext();
+        var order = await db.Orders.SingleAsync(x => x.OrderNumber == "1204466653");
+        Assert.Null(order.DeliveryDate);
+
+        var assignmentService = new ProductionAssignmentService(db);
+        var approved = await db.Orders.SingleAsync(x => x.Id == order.Id);
+        approved.Status = OrderStatus.Approved;
+        await db.SaveChangesAsync();
+        var rows = await assignmentService.GetApprovedOrdersAsync("unassigned", null, null, null, null, null, null);
+        Assert.Contains(rows, row => row.Id == order.Id && !row.IsAssigned && row.DeliveryDate is null);
+
+        var reportDate = new DateTime(2026, 3, 27);
+        var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(reportDate);
+        Assert.DoesNotContain(report.DeliverySummary, row => row.PoNumber == order.OrderNumber);
+
+        var ordersExport = await fixture.CreateExportService().ExportOrdersToExcelAsync(reportDate);
+        Assert.DoesNotContain(order.OrderNumber, DecodeCsv(ordersExport.Content));
+
+        var pastelExport = await new PastelExportService(fixture.CreateDbContext()).GenerateInvoiceFileAsync(reportDate);
+        Assert.DoesNotContain(order.OrderNumber, DecodeCsv(pastelExport.Content));
     }
 
     [Fact]

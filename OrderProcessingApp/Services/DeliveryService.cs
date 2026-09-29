@@ -41,6 +41,11 @@ public class DeliveryService : IDeliveryService
             throw new InvalidOperationException($"Delivery scheduling is only allowed for {OrderWorkflowStatusRules.DeliveryEligibleStatusLabel} orders. Current status: {order.Status}.");
         }
 
+        if (normalized < order.OrderDate.Date)
+        {
+            throw new InvalidOperationException("Delivery date cannot be earlier than order date.");
+        }
+
         _logger.LogInformation("[DELIVERY STATUS FILTER] AllowedStatuses={Statuses}, OrderId={OrderId}, CurrentStatus={Status}", OrderWorkflowStatusRules.DeliveryEligibleStatusLabel, order.Id, order.Status);
 
         Console.WriteLine($"[DELIVERY] Scheduling allowed. OrderId={order.Id}, OrderNumber={order.OrderNumber}, Status={order.Status}");
@@ -107,14 +112,25 @@ public class DeliveryService : IDeliveryService
                 "Order",
                 order.Id,
                 "DeliveryDate",
-                order.DeliveryDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                order.DeliveryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
                 normalized.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             order.DeliveryDate = normalized;
         }
 
-        Console.WriteLine($"[SCHEDULE] Saved date: {existing.DeliveryDate:O}");
-        Console.WriteLine($"[SCHEDULE] Kind: {existing.DeliveryDate.Kind}");
-        Console.WriteLine($"[ScheduleDeliveryAsync] Persisting DeliverySchedule.DeliveryDate={existing.DeliveryDate:yyyy-MM-dd} and Order.DeliveryDate={order.DeliveryDate:yyyy-MM-dd} for OrderId={orderId}");
+        var plannerOrderEvents = await _dbContext.ProductionDeliveryPlanEvents
+            .Where(plannerEvent => plannerEvent.EventType == ProductionDeliveryPlanEventType.Order
+                && plannerEvent.OrderId == orderId)
+            .ToListAsync(cancellationToken);
+        var plannerUpdatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        foreach (var plannerEvent in plannerOrderEvents)
+        {
+            plannerEvent.PlannedDeliveryDate = normalized;
+            plannerEvent.UpdatedAt = plannerUpdatedAt;
+        }
+
+        Console.WriteLine($"[SCHEDULE] Saved date: {existing!.DeliveryDate:O}");
+        Console.WriteLine($"[SCHEDULE] Kind: {existing!.DeliveryDate.Kind}");
+        Console.WriteLine($"[ScheduleDeliveryAsync] Persisting DeliverySchedule.DeliveryDate={existing.DeliveryDate:yyyy-MM-dd} and Order.DeliveryDate={order.DeliveryDate?.ToString("yyyy-MM-dd") ?? "(none)"} for OrderId={orderId}");
         Console.WriteLine($"[DELIVERY] Order status unchanged after scheduling. OrderId={order.Id}, Status={order.Status}");
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -343,7 +359,7 @@ public class DeliveryService : IDeliveryService
             Id = order.Id,
             OrderNumber = order.OrderNumber,
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
-            DeliveryDate = order.DeliveryDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
             DistributionCentreId = order.DistributionCentreId,
             DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
             Source = order.Source,

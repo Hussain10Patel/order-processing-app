@@ -250,7 +250,7 @@ public class ProductionService : IProductionService
             throw new KeyNotFoundException($"Orders not found: {string.Join(", ", notFound)}.");
 
         var productionReadyOrders = orders
-            .Where(o => o.Status == OrderStatus.Approved)
+            .Where(o => o.Status == OrderStatus.Approved && o.DeliveryDate.HasValue)
             .ToList();
 
         if (productionReadyOrders.Count == 0)
@@ -266,7 +266,7 @@ public class ProductionService : IProductionService
                 Quantity = i.Quantity,
                 Pallets = i.Pallets,
                 o.DistributionCentreId,
-                PlanDate = ToDbDate(o.DeliveryDate)
+                PlanDate = ToDbDate(o.DeliveryDate!.Value)
             }))
             .ToList();
 
@@ -331,6 +331,11 @@ public class ProductionService : IProductionService
         if (!OrderWorkflowStatusRules.IsProductionDecisionEditable(order.Status))
         {
             throw new InvalidOperationException($"Production decisions can only be saved for Approved, InProduction, or Processed orders. Current status: {order.Status}.");
+        }
+
+        if (!order.DeliveryDate.HasValue)
+        {
+            throw new InvalidOperationException("A delivery date is required before saving production decisions.");
         }
 
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
@@ -641,7 +646,7 @@ public class ProductionService : IProductionService
         var orders = await _dbContext.Orders
             .AsNoTracking()
             .Where(x => OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(x.Status))
-            .Where(x => x.DeliveryDate.Date >= startDate.Date && x.DeliveryDate.Date <= endDate.Date)
+            .Where(x => x.DeliveryDate.HasValue && x.DeliveryDate.Value.Date >= startDate.Date && x.DeliveryDate.Value.Date <= endDate.Date)
             .Include(x => x.DistributionCentre)
             .Include(x => x.Items)
                 .ThenInclude(x => x.Product)
@@ -662,7 +667,12 @@ public class ProductionService : IProductionService
                 continue;
             }
 
-            var orderDateKey = ToDbDate(order.DeliveryDate).ToString("yyyy-MM-dd");
+            if (!order.DeliveryDate.HasValue)
+            {
+                continue;
+            }
+
+            var orderDateKey = ToDbDate(order.DeliveryDate.Value).ToString("yyyy-MM-dd");
             if (!calendarByDate.TryGetValue(orderDateKey, out var dayDto))
             {
                 dayDto = new ProductionCalendarDayDto
@@ -679,7 +689,7 @@ public class ProductionService : IProductionService
                 .FirstOrDefault();
 
             var isScheduled = schedule is not null;
-            var scheduleStatus = isScheduled ? (string.IsNullOrWhiteSpace(schedule.Status) ? "Scheduled" : schedule.Status) : "Unscheduled";
+            var scheduleStatus = isScheduled ? (string.IsNullOrWhiteSpace(schedule?.Status) ? "Scheduled" : schedule!.Status) : "Unscheduled";
 
             foreach (var item in order.Items)
             {
@@ -815,7 +825,11 @@ public class ProductionService : IProductionService
     {
         _ = planningDate;
 
-        var productIds = orderedProductionOrders
+        var datedOrders = orderedProductionOrders
+            .Where(order => order.DeliveryDate.HasValue)
+            .ToList();
+
+        var productIds = datedOrders
             .SelectMany(order => order.Items.Select(item => item.ProductId))
             .Distinct()
             .ToList();
@@ -829,7 +843,7 @@ public class ProductionService : IProductionService
 
         var calculatedByItemId = new Dictionary<int, ProductionItemCalculation>();
 
-        var itemsByProduct = orderedProductionOrders
+        var itemsByProduct = datedOrders
             .SelectMany(order => order.Items.Select(item => new { Order = order, Item = item }))
             .GroupBy(x => x.Item.ProductId)
             .ToList();

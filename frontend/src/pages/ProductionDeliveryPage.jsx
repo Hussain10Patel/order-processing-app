@@ -132,19 +132,22 @@ function ProductionDeliveryPage() {
     try {
       await updateProductionDeliveryOrderDate(event.id, pendingDates[event.id] || null);
       await loadPlan();
+    } catch (requestError) {
+      setError(requestError.message || "Unable to update the delivery date");
     } finally {
       setEventSaving(event.id, "date", false);
     }
   }
 
   async function handleSchedule(event) {
-    if (!event.orderId) return;
+    const deliveryDate = pendingDates[event.id] || event.plannedDeliveryDate;
+    if (!event.orderId || !deliveryDate) return;
 
     setSchedulingId(event.id);
     try {
       await scheduleDelivery({
         orderId: event.orderId,
-        deliveryDate: pendingDates[event.id] || event.plannedDeliveryDate || event.orderDate,
+        deliveryDate,
         notes: null,
       });
       await loadPlan();
@@ -378,7 +381,7 @@ function ProductionDeliveryPage() {
                             + Add Production
                           </button>
                           {isOrder && (
-                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.orderId}>
+                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.orderId || !(pendingDates[event.id] || event.plannedDeliveryDate)}>
                               {schedulingId === event.id ? "Scheduling..." : "Schedule"}
                             </button>
                           )}

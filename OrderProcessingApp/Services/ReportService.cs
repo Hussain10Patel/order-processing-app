@@ -18,7 +18,8 @@ public class ReportService : IReportService
     {
         var orderDates = await _dbContext.Orders
             .AsNoTracking()
-            .Select(x => x.DeliveryDate.Date)
+            .Where(x => x.DeliveryDate.HasValue)
+            .Select(x => x.DeliveryDate!.Value.Date)
             .Distinct()
             .ToListAsync(cancellationToken);
 
@@ -31,7 +32,8 @@ public class ReportService : IReportService
         var pastelDates = await _dbContext.Orders
             .AsNoTracking()
             .Where(x => x.Status == OrderStatus.Approved || x.Status == OrderStatus.Processed)
-            .Select(x => x.DeliveryDate.Date)
+            .Where(x => x.DeliveryDate.HasValue)
+            .Select(x => x.DeliveryDate!.Value.Date)
             .Distinct()
             .ToListAsync(cancellationToken);
 
@@ -149,7 +151,7 @@ public class ReportService : IReportService
                 {
                     PoNumber = x.Order.OrderNumber,
                     Dc = x.Order.DistributionCentre?.Name ?? string.Empty,
-                    DeliveryDate = x.Order.DeliveryDate.ToString("yyyy-MM-dd"),
+                    DeliveryDate = x.Order.DeliveryDate!.Value.ToString("yyyy-MM-dd"),
                     Status = x.Status
                 })
                 .OrderBy(x => x.Dc)

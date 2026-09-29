@@ -366,14 +366,15 @@ public class UploadController : ControllerBase
         if (!TryParseDate(orderDateText, out var orderDate))
             return new RowValidationError("OrderDate", $"Invalid date: '{orderDateText}'");
 
-        DateTime deliveryDate;
-        if (string.IsNullOrWhiteSpace(deliveryDateText))
+        DateTime? deliveryDate = null;
+        if (!string.IsNullOrWhiteSpace(deliveryDateText))
         {
-            deliveryDate = orderDate;
-        }
-        else if (!TryParseDate(deliveryDateText, out deliveryDate))
-        {
-            return new RowValidationError("DeliveryDate", $"Invalid date: '{deliveryDateText}'");
+            if (!TryParseDate(deliveryDateText, out var parsedDeliveryDate))
+            {
+                return new RowValidationError("DeliveryDate", $"Invalid date: '{deliveryDateText}'");
+            }
+
+            deliveryDate = parsedDeliveryDate;
         }
 
         var quantity = SafeParseDecimal(quantityText, errors, fileName, lineNumber, "Quantity");

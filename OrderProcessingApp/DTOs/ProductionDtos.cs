@@ -30,7 +30,7 @@ public class ProductionOrderDto
 {
     public int OrderId { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
-    public DateTime DeliveryDate { get; set; }
+    public DateTime? DeliveryDate { get; set; }
     public int DistributionCentreId { get; set; }
     public string DistributionCentre { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;

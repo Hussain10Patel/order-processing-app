@@ -75,6 +75,6 @@ public class OrderExcludedFromPlanDto
     public int Id { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
     public string DistributionCentre { get; set; } = string.Empty;
-    public string DeliveryDate { get; set; } = string.Empty;
+    public string? DeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;
 }

@@ -50,9 +50,11 @@ public class OrderService : IOrderService
             cancellationToken);
 
         var orderDate = ToDbDate(dto.OrderDate);
-        var deliveryDate = ToDbDate(dto.DeliveryDate);
+        var deliveryDate = dto.DeliveryDate.HasValue
+            ? ToDbDate(dto.DeliveryDate.Value)
+            : (DateTime?)null;
 
-        if (deliveryDate < orderDate)
+        if (deliveryDate.HasValue && deliveryDate.Value < orderDate)
         {
             throw new InvalidOperationException("Delivery date cannot be earlier than order date.");
         }
@@ -239,7 +241,7 @@ public class OrderService : IOrderService
                     row,
                     orderNumber,
                     ToDbDate(row.OrderDate),
-                    ToDbDate(row.DeliveryDate),
+                    row.DeliveryDate.HasValue ? ToDbDate(row.DeliveryDate.Value) : null,
                     distributionCentre,
                     product));
             }
@@ -298,7 +300,7 @@ public class OrderService : IOrderService
 
                 var orderDate = group.Key.OrderDate;
                 var deliveryDate = group.Key.DeliveryDate;
-                if (deliveryDate < orderDate)
+                if (deliveryDate.HasValue && deliveryDate.Value < orderDate)
                 {
                     result.SkippedOrders++;
                     foreach (var row in group)
@@ -1025,7 +1027,7 @@ public class OrderService : IOrderService
         CsvOrderRowDto Row,
         string OrderNumber,
         DateTime OrderDate,
-        DateTime DeliveryDate,
+        DateTime? DeliveryDate,
         DistributionCentre DistributionCentre,
         Product Product);
 
@@ -1166,7 +1168,7 @@ public class OrderService : IOrderService
                 : (decimal?)null;
             var normalizedOrderPrice = Math.Round(item.Price, 2);
             var isPriceMissing = !livePrice.IsFound || !normalizedSystemPrice.HasValue;
-            var isPriceMismatch = !isPriceMissing && normalizedSystemPrice.Value != normalizedOrderPrice;
+            var isPriceMismatch = !isPriceMissing && normalizedSystemPrice.GetValueOrDefault() != normalizedOrderPrice;
 
             var dto = new OrderItemDto
             {
@@ -1221,7 +1223,7 @@ public class OrderService : IOrderService
             Id = order.Id,
             OrderNumber = order.OrderNumber,
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
-            DeliveryDate = order.DeliveryDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
             DistributionCentreId = order.DistributionCentreId,
             DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
             Source = order.Source,
@@ -1272,6 +1274,11 @@ public class OrderService : IOrderService
             throw new InvalidOperationException($"Order must be in Approved status to process. Current status: {order.Status}.");
         }
 
+        if (!order.DeliveryDate.HasValue)
+        {
+            throw new InvalidOperationException("A delivery date is required before processing the order.");
+        }
+
         var originalStatus = order.Status;
         var originalNotes = order.Notes;
         foreach (var item in order.Items)
@@ -1279,7 +1286,7 @@ public class OrderService : IOrderService
             var planningCheck = await _planningService.CheckStockVsProductionRequirementsAsync(
                 item.ProductId,
                 item.Quantity,
-                order.DeliveryDate,
+                order.DeliveryDate.Value,
                 cancellationToken);
 
             if (!planningCheck.IsSufficient)
@@ -2185,7 +2192,7 @@ public class OrderService : IOrderService
             Id = order.Id,
             OrderNumber = order.OrderNumber,
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
-            DeliveryDate = order.DeliveryDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
             DistributionCentreId = order.DistributionCentreId,
             DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
             Source = order.Source,

@@ -235,17 +235,17 @@ public class ProductionDeliveryPlannerTests
         Assert.True(reloadedProduction.StockAfter.Single(x => x.ProductId == fixture.ProductA.Id).Quantity > 0m);
 
         var deliveryService = fixture.CreateDeliveryService();
-        var scheduled = await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, "planner schedule");
+        var scheduled = await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, "planner schedule");
 
         Assert.Equal("Scheduled", scheduled.Status);
         Assert.Equal(fixture.Order1.Id, scheduled.OrderId);
 
         await using var db = fixture.CreateDbContext();
         var schedule = await db.DeliverySchedules.SingleAsync(x => x.OrderId == fixture.Order1.Id);
-        Assert.Equal(fixture.Order1.DeliveryDate.Date, schedule.DeliveryDate.Date);
-        Assert.Equal(fixture.Order1.DeliveryDate.Date, (await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id)).DeliveryDate.Date);
+        Assert.Equal(fixture.Order1.DeliveryDate.Value.Date, schedule.DeliveryDate.Date);
+        Assert.Equal(fixture.Order1.DeliveryDate.Value.Date, (await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id)).DeliveryDate!.Value.Date);
 
-        var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate);
+        var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate!.Value);
         Assert.Contains(report.DeliverySummary, row => row.PoNumber == fixture.Order1.OrderNumber);
     }
 
@@ -274,18 +274,81 @@ public class ProductionDeliveryPlannerTests
         });
 
         var deliveryService = fixture.CreateDeliveryService();
-        var scheduled = await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, "planner schedule");
+        var scheduled = await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, "planner schedule");
 
         Assert.Equal("Scheduled", scheduled.Status);
         Assert.Equal(fixture.Order1.Id, scheduled.OrderId);
 
         await using var db = fixture.CreateDbContext();
         var schedule = await db.DeliverySchedules.SingleAsync(x => x.OrderId == fixture.Order1.Id);
-        Assert.Equal(fixture.Order1.DeliveryDate.Date, schedule.DeliveryDate.Date);
-        Assert.Equal(fixture.Order1.DeliveryDate.Date, (await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id)).DeliveryDate.Date);
+        Assert.Equal(fixture.Order1.DeliveryDate.Value.Date, schedule.DeliveryDate.Date);
+        Assert.Equal(fixture.Order1.DeliveryDate.Value.Date, (await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id)).DeliveryDate!.Value.Date);
 
-        var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate);
+        var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate!.Value);
         Assert.Contains(report.DeliverySummary, row => row.PoNumber == fixture.Order1.OrderNumber);
+    }
+
+    [Fact]
+    public async Task SaveDateForScheduledOrder_UpdatesOrderPlannerEventAndExistingSchedule()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+        var initialDate = fixture.Order1.DeliveryDate;
+        Assert.NotNull(initialDate);
+        var changedDate = new DateTime(2026, 8, 20);
+        var planner = fixture.CreatePlannerService();
+        var initialPlan = await planner.GetCurrentPlanAsync();
+        var orderEvent = Assert.Single(initialPlan.Events, item => item.OrderId == fixture.Order1.Id);
+        var delivery = fixture.CreateDeliveryService();
+        await delivery.ScheduleDeliveryAsync(fixture.Order1.Id, initialDate!.Value, "schedule stays distinct");
+
+        await fixture.CreatePlannerService().UpdateOrderDeliveryDateAsync(orderEvent.Id, new ProductionDeliveryPlanDeliveryDateUpdateDto
+        {
+            DeliveryDate = changedDate
+        });
+
+        await using var db = fixture.CreateDbContext();
+        var order = await db.Orders.SingleAsync(item => item.Id == fixture.Order1.Id);
+        var schedule = await db.DeliverySchedules.SingleAsync(item => item.OrderId == fixture.Order1.Id);
+        var savedOrderEvent = await db.ProductionDeliveryPlanEvents.SingleAsync(item => item.Id == orderEvent.Id);
+        Assert.Equal(changedDate, order.DeliveryDate);
+        Assert.Equal(changedDate, schedule.DeliveryDate);
+        Assert.Equal(changedDate, savedOrderEvent.PlannedDeliveryDate);
+        Assert.Equal("Scheduled", schedule.Status);
+        Assert.Equal(2, await db.ProductionDeliveryPlanEvents.CountAsync(item => item.EventType == ProductionDeliveryPlanEventType.Order));
+    }
+
+    [Fact]
+    public async Task DeliveryScheduling_UpdatesExistingPlannerDateWithoutCreatingAnotherEvent()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+        var initialPlan = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        var orderEvent = Assert.Single(initialPlan.Events, item => item.OrderId == fixture.Order1.Id);
+        var productionEventCount = initialPlan.Events.Count(item => item.EventType == "Production");
+        var rescheduledDate = new DateTime(2026, 8, 20);
+
+        await fixture.CreateDeliveryService().ScheduleDeliveryAsync(fixture.Order1.Id, rescheduledDate, "planner sync");
+
+        await using var db = fixture.CreateDbContext();
+        var order = await db.Orders.SingleAsync(item => item.Id == fixture.Order1.Id);
+        var schedule = await db.DeliverySchedules.SingleAsync(item => item.OrderId == fixture.Order1.Id);
+        var plannerOrderEvent = await db.ProductionDeliveryPlanEvents.SingleAsync(item => item.Id == orderEvent.Id);
+
+        Assert.Equal(rescheduledDate, order.DeliveryDate);
+        Assert.Equal(rescheduledDate, schedule.DeliveryDate);
+        Assert.Equal(rescheduledDate, plannerOrderEvent.PlannedDeliveryDate);
+        Assert.Equal(productionEventCount, await db.ProductionDeliveryPlanEvents.CountAsync(item => item.EventType == ProductionDeliveryPlanEventType.Production));
+    }
+
+    [Fact]
+    public async Task PlannerSaveDate_RejectsDateBeforeOrderDate()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+        var plan = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        var orderEvent = Assert.Single(plan.Events, item => item.OrderId == fixture.Order1.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.CreatePlannerService().UpdateOrderDeliveryDateAsync(
+            orderEvent.Id,
+            new ProductionDeliveryPlanDeliveryDateUpdateDto { DeliveryDate = fixture.Order1.OrderDate.AddDays(-1) }));
     }
 
     [Fact]
@@ -293,7 +356,7 @@ public class ProductionDeliveryPlannerTests
     {
         await using var fixture = await PlannerFixture.CreateAsync();
 
-        var originalDate = fixture.Order1.DeliveryDate.Date;
+        var originalDate = fixture.Order1.DeliveryDate!.Value.Date;
         var newDate = new DateTime(2026, 8, 20);
 
         var planner = fixture.CreatePlannerService();
@@ -314,7 +377,7 @@ public class ProductionDeliveryPlannerTests
             var order = await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id);
             var plannerOrderEvent = await db.ProductionDeliveryPlanEvents.SingleAsync(x => x.Id == reloadedOrderEvent.Id);
 
-            Assert.Equal(newDate.Date, order.DeliveryDate.Date);
+            Assert.Equal(newDate.Date, order.DeliveryDate!.Value.Date);
             Assert.Equal(newDate.Date, plannerOrderEvent.PlannedDeliveryDate!.Value.Date);
         }
 
@@ -358,7 +421,7 @@ public class ProductionDeliveryPlannerTests
             var schedule = await db.DeliverySchedules.SingleAsync(x => x.OrderId == fixture.Order1.Id);
             var order = await db.Orders.SingleAsync(x => x.Id == fixture.Order1.Id);
             Assert.Equal(newDate.Date, schedule.DeliveryDate.Date);
-            Assert.Equal(newDate.Date, order.DeliveryDate.Date);
+            Assert.Equal(newDate.Date, order.DeliveryDate!.Value.Date);
         }
 
         var scheduledRows = await deliveryService.GetScheduleByDateAsync(newDate);
@@ -369,6 +432,34 @@ public class ProductionDeliveryPlannerTests
         var deliveryCsv = Encoding.UTF8.GetString(deliveryExport.Content);
         Assert.Contains("ORD-100", deliveryCsv);
         Assert.Contains("2026-08-20", deliveryCsv);
+    }
+
+    [Fact]
+    public async Task SaveDateForScheduledOrderUpdatesExistingScheduleAndPlannerEvent()
+    {
+        await using var fixture = await PlannerFixture.CreateAsync();
+        var originalDate = fixture.Order1.DeliveryDate!.Value;
+        var changedDate = new DateTime(2026, 8, 22);
+
+        var deliveryService = fixture.CreateDeliveryService();
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, originalDate, "existing schedule");
+
+        var planner = fixture.CreatePlannerService();
+        var current = await planner.GetCurrentPlanAsync();
+        var orderEvent = Assert.Single(current.Events, item => item.OrderId == fixture.Order1.Id);
+        await planner.UpdateOrderDeliveryDateAsync(orderEvent.Id, new ProductionDeliveryPlanDeliveryDateUpdateDto { DeliveryDate = changedDate });
+
+        await using var db = fixture.CreateDbContext();
+        var order = await db.Orders.SingleAsync(item => item.Id == fixture.Order1.Id);
+        var schedule = await db.DeliverySchedules.SingleAsync(item => item.OrderId == fixture.Order1.Id);
+        var savedOrderEvent = await db.ProductionDeliveryPlanEvents.SingleAsync(item => item.Id == orderEvent.Id);
+        Assert.Equal(changedDate, order.DeliveryDate);
+        Assert.Equal(changedDate, schedule.DeliveryDate);
+        Assert.Equal(changedDate, savedOrderEvent.PlannedDeliveryDate);
+        Assert.Equal(1, await db.ProductionDeliveryPlanEvents.CountAsync(item => item.EventType == ProductionDeliveryPlanEventType.Order && item.OrderId == fixture.Order1.Id));
+
+        var reloaded = await fixture.CreatePlannerService().GetCurrentPlanAsync();
+        Assert.Equal("2026-08-22", Assert.Single(reloaded.Events, item => item.OrderId == fixture.Order1.Id).PlannedDeliveryDate);
     }
 
     // ----------------------------------------------------------------
@@ -638,7 +729,7 @@ public class ProductionDeliveryPlannerTests
 
         // Schedule Order1 first
         var deliveryService = fixture.CreateDeliveryService();
-        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, null);
 
         await using (var db = fixture.CreateDbContext())
         {
@@ -658,12 +749,12 @@ public class ProductionDeliveryPlannerTests
         await using var fixture = await PlannerFixture.CreateAsync();
 
         var deliveryService = fixture.CreateDeliveryService();
-        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, null);
 
         var orderService = fixture.CreateOrderService();
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
-        var schedules = await deliveryService.GetScheduleByDateAsync(fixture.Order1.DeliveryDate);
+        var schedules = await deliveryService.GetScheduleByDateAsync(fixture.Order1.DeliveryDate!.Value);
         Assert.DoesNotContain(schedules, x => x.OrderId == fixture.Order1.Id);
     }
 
@@ -673,13 +764,13 @@ public class ProductionDeliveryPlannerTests
         await using var fixture = await PlannerFixture.CreateAsync();
 
         var deliveryService = fixture.CreateDeliveryService();
-        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate, null);
+        await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, null);
 
         var orderService = fixture.CreateOrderService();
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
         var exportService = fixture.CreateExportService();
-        var export = await exportService.ExportDeliveryScheduleAsync(fixture.Order1.DeliveryDate);
+        var export = await exportService.ExportDeliveryScheduleAsync(fixture.Order1.DeliveryDate!.Value);
         var csv = Encoding.UTF8.GetString(export.Content);
         Assert.DoesNotContain(fixture.Order1.OrderNumber, csv);
     }
@@ -693,7 +784,7 @@ public class ProductionDeliveryPlannerTests
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
         var reportService = fixture.CreateReportService();
-        var summary = await reportService.GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate);
+        var summary = await reportService.GetSummaryByDeliveryDateAsync(fixture.Order1.DeliveryDate!.Value);
         Assert.DoesNotContain(summary.DeliverySummary, x => x.PoNumber == fixture.Order1.OrderNumber);
     }
 
@@ -817,7 +908,7 @@ public class ProductionDeliveryPlannerTests
             {
                 OrderNumber = fixture.Order1.OrderNumber, // same number
                 OrderDate = fixture.Order1.OrderDate,
-                DeliveryDate = fixture.Order1.DeliveryDate,
+                DeliveryDate = fixture.Order1.DeliveryDate!.Value,
                 DistributionCentreId = fixture.Order1.DistributionCentreId,
                 Source = OrderSource.CSV,
                 Status = OrderStatus.Approved,
@@ -989,7 +1080,7 @@ public class ProductionDeliveryPlannerTests
             RowNumber = 1,
             OrderNumber = orderNumber,
             OrderDate = new DateTime(2026, 8, 10),
-            DeliveryDate = new DateTime(2026, 8, 14),
+            DeliveryDate = null,
             DistributionCentre = "DC North",        // matches the fixture DC
             ProductCode = fixture.ProductA.SKUCode,  // "PA"
             ProductName = fixture.ProductA.Name,
@@ -1015,11 +1106,18 @@ public class ProductionDeliveryPlannerTests
                 .SingleAsync(x => x.OrderNumber == orderNumber);
             firstOrderId = created.Id;
             Assert.True(created.IsActive);
+            Assert.Null(created.DeliveryDate);
             Assert.False(created.IsExcludedFromPlan);
         }
 
         // Approve so it is planner-eligible
         await orderService.ApproveOrderAsync(firstOrderId);
+
+        await using (var assignmentDb = fixture.CreateDbContext())
+        {
+            var assignmentService = new ProductionAssignmentService(assignmentDb);
+            Assert.True((await assignmentService.SetDeliveryDateAsync(firstOrderId, new DateTime(2026, 8, 14)))?.IsAssigned);
+        }
 
         var planner = fixture.CreatePlannerService();
         var planWithFirst = await planner.GetCurrentPlanAsync();
@@ -1033,6 +1131,7 @@ public class ProductionDeliveryPlannerTests
             var inactive = await db.Orders.IgnoreQueryFilters()
                 .SingleAsync(x => x.Id == firstOrderId);
             Assert.False(inactive.IsActive);
+            Assert.Equal(new DateTime(2026, 8, 14), inactive.DeliveryDate);
 
             // Planner event removed by SoftDeleteOrderAsync
             Assert.False(await db.ProductionDeliveryPlanEvents
@@ -1065,6 +1164,7 @@ public class ProductionDeliveryPlannerTests
             Assert.NotEqual(firstOrderId, secondOrderId);
             Assert.True(newOrder.IsActive);
             Assert.False(newOrder.IsExcludedFromPlan);
+            Assert.Null(newOrder.DeliveryDate);
 
             // No stale planner events from the old order
             Assert.False(await db.ProductionDeliveryPlanEvents

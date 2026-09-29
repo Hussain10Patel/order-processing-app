@@ -40,6 +40,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Services
 builder.Services.AddScoped<IOrderService, OrderService>();
+builder.Services.AddScoped<IProductionAssignmentService, ProductionAssignmentService>();
 builder.Services.AddScoped<IProductService, ProductService>();
 builder.Services.AddScoped<IPricingService, PricingService>();
 builder.Services.AddScoped<IDistributionCentreResolver, DistributionCentreResolver>();

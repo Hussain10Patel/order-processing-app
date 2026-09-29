@@ -6,7 +6,7 @@ public class CsvOrderRowDto
     public int RowNumber { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
     public DateTime OrderDate { get; set; }
-    public DateTime DeliveryDate { get; set; }
+    public DateTime? DeliveryDate { get; set; }
     public string DistributionCentre { get; set; } = string.Empty;
     public string ProductCode { get; set; } = string.Empty;
     public string ProductName { get; set; } = string.Empty;

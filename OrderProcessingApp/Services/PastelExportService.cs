@@ -26,7 +26,7 @@ public class PastelExportService : IPastelExportService
             .Include(x => x.DistributionCentre)
             .Include(x => x.Items)
                 .ThenInclude(x => x.Product)
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end
+            .Where(x => x.DeliveryDate.HasValue && x.DeliveryDate.Value >= start && x.DeliveryDate.Value < end
                 && (x.Status == OrderStatus.Approved || x.Status == OrderStatus.Processed))
             .OrderBy(x => x.DistributionCentre!.Name)
             .ThenBy(x => x.OrderNumber)

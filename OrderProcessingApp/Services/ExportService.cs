@@ -25,7 +25,7 @@ public class ExportService : IExportService
             .Include(x => x.DistributionCentre)
             .Include(x => x.Items)
                 .ThenInclude(x => x.Product)
-            .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end)
+            .Where(x => x.DeliveryDate.HasValue && x.DeliveryDate.Value >= start && x.DeliveryDate.Value < end)
             .OrderBy(x => x.OrderNumber)
             .ToListAsync(cancellationToken);
 
@@ -40,7 +40,7 @@ public class ExportService : IExportService
                 {
                     EscapeCsv(order.OrderNumber),
                     order.OrderDate.ToString("yyyy-MM-dd"),
-                    order.DeliveryDate.ToString("yyyy-MM-dd"),
+                    order.DeliveryDate!.Value.ToString("yyyy-MM-dd"),
                     EscapeCsv(order.DistributionCentre?.Name ?? string.Empty),
                     EscapeCsv(order.Status.ToString()),
                     EscapeCsv(item.Product?.SKUCode ?? string.Empty),

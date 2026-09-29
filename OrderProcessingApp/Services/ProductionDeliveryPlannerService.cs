@@ -100,11 +100,6 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             throw new InvalidOperationException("Order event is missing an OrderId.");
         }
 
-        if (!dto.DeliveryDate.HasValue)
-        {
-            throw new InvalidOperationException("Delivery date is required.");
-        }
-
         var order = await _dbContext.Orders
             .FirstOrDefaultAsync(x => x.Id == plannerEvent.OrderId.Value, cancellationToken);
 
@@ -113,11 +108,33 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             throw new KeyNotFoundException($"Order not found. OrderId={plannerEvent.OrderId.Value}.");
         }
 
-        var normalizedDate = DateTime.SpecifyKind(dto.DeliveryDate.Value.Date, DateTimeKind.Unspecified);
+        var schedule = await _dbContext.DeliverySchedules
+            .FirstOrDefaultAsync(x => x.OrderId == order.Id, cancellationToken);
+        if (!dto.DeliveryDate.HasValue && schedule is not null)
+        {
+            throw new InvalidOperationException("Unschedule the order before clearing its delivery date.");
+        }
+
+        var normalizedDate = dto.DeliveryDate.HasValue
+            ? DateTime.SpecifyKind(dto.DeliveryDate.Value.Date, DateTimeKind.Unspecified)
+            : (DateTime?)null;
+        if (normalizedDate.HasValue && normalizedDate.Value < order.OrderDate.Date)
+        {
+            throw new InvalidOperationException("Delivery date cannot be earlier than order date.");
+        }
 
         plannerEvent.PlannedDeliveryDate = normalizedDate;
         plannerEvent.UpdatedAt = Now();
         order.DeliveryDate = normalizedDate;
+        var snapshotOrder = context.EligibleOrders.FirstOrDefault(item => item.OrderId == order.Id);
+        if (snapshotOrder is not null)
+        {
+            snapshotOrder.DeliveryDate = normalizedDate;
+        }
+        if (schedule is not null && normalizedDate.HasValue)
+        {
+            schedule.DeliveryDate = normalizedDate.Value;
+        }
 
         await TouchPlanAsync(context.Plan);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -231,7 +248,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             Id = o.Id,
             OrderNumber = o.OrderNumber,
             DistributionCentre = o.DistributionCentre?.Name ?? string.Empty,
-            DeliveryDate = o.DeliveryDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = o.DeliveryDate?.ToString("yyyy-MM-dd"),
             Status = o.Status.ToString()
         }).ToList();
     }
@@ -685,14 +702,18 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             return null;
         }
 
-        var effective = isScheduled && currentOrder is not null ? currentOrder.DeliveryDate : date.Value;
+        var effective = isScheduled && currentOrder?.DeliveryDate is not null
+            ? currentOrder.DeliveryDate.Value
+            : date.Value;
         return effective.ToString("yyyy-MM-dd");
     }
 
-    private static DateTime ResolvePlannedDeliveryDate(ProductionOrderDto order, bool isScheduled)
+    private static DateTime? ResolvePlannedDeliveryDate(ProductionOrderDto order, bool isScheduled)
     {
-        var source = isScheduled ? order.DeliveryDate : order.DeliveryDate;
-        return DateTime.SpecifyKind(source.Date, DateTimeKind.Unspecified);
+        _ = isScheduled;
+        return order.DeliveryDate.HasValue
+            ? DateTime.SpecifyKind(order.DeliveryDate.Value.Date, DateTimeKind.Unspecified)
+            : null;
     }
 
     private async Task ShiftSequencesAsync(int planId, int startingSequence, CancellationToken cancellationToken)

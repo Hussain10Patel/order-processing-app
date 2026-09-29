@@ -1061,8 +1061,8 @@ function OrdersPage() {
   }
 
   function validateManualForm() {
-    if (!manualForm.orderNumber || !manualForm.orderDate || !manualForm.deliveryDate) {
-      return "Order number, order date, and delivery date are required.";
+    if (!manualForm.orderNumber || !manualForm.orderDate) {
+      return "Order number and order date are required.";
     }
 
     if (!manualForm.distributionCentreId) {
@@ -1116,7 +1116,7 @@ function OrdersPage() {
       const payload = {
         orderNumber: manualForm.orderNumber.trim(),
         orderDate: manualForm.orderDate,
-        deliveryDate: manualForm.deliveryDate,
+        deliveryDate: manualForm.deliveryDate || null,
         distributionCentreId: selectedDistributionCentre.id,
         items: manualForm.items.map((item) => ({
           productId: Number(item.productId),
@@ -1524,7 +1524,6 @@ function OrdersPage() {
             <div>
               <label>Delivery Date</label>
               <input
-                required
                 type="date"
                 value={manualForm.deliveryDate}
                 onChange={(event) => updateManualField("deliveryDate", event.target.value)}

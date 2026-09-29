@@ -178,6 +178,27 @@ public class DeliveryUnscheduleTests
     }
 
     [Fact]
+    public async Task ScheduleDeliveryAsync_WhenDatePrecedesOrderDate_DoesNotCreateSchedule()
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var orderDate = new DateTime(2026, 8, 28);
+        var seeded = await fixture.AddOrderAsync(
+            orderNumber: "SCHEDULE-BEFORE-ORDER",
+            status: OrderStatus.Approved,
+            quantity: 12m,
+            price: 4m,
+            deliveryDate: orderDate.AddDays(1),
+            isScheduled: false,
+            withDecision: false);
+
+        await using var db = fixture.CreateDbContext();
+        var service = new DeliveryService(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ScheduleDeliveryAsync(seeded.OrderId, orderDate.AddDays(-1), "invalid date"));
+        Assert.Empty(await db.DeliverySchedules.Where(schedule => schedule.OrderId == seeded.OrderId).ToListAsync());
+    }
+
+    [Fact]
     public async Task UnscheduleDeliveryAsync_WhenSuccessful_CreatesOneScheduleAuditEntry()
     {
         await using var fixture = await TestFixture.CreateAsync();
