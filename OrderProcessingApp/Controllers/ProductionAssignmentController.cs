@@ -56,14 +56,30 @@ public sealed class ProductionAssignmentController : ControllerBase
         [FromBody] SetOrderDeliveryDateDto dto,
         CancellationToken cancellationToken)
     {
-        if (dto is null || !dto.HasDeliveryDate)
+        if (dto is null || !dto.HasDeliveryDate || !dto.DeliveryDate.HasValue)
         {
-            return BadRequest(new { message = "The deliveryDate field is required. Use null to clear it." });
+            return BadRequest(new { message = "A non-null deliveryDate is required to assign or change an order date." });
         }
 
         try
         {
-            var result = await _assignmentService.SetDeliveryDateAsync(orderId, dto.DeliveryDate, cancellationToken);
+            var result = await _assignmentService.SetDeliveryDateAsync(orderId, dto.DeliveryDate.Value, cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return UnprocessableEntity(new { message = exception.Message });
+        }
+    }
+
+    [HttpDelete("orders/{orderId:int}/assignment")]
+    public async Task<ActionResult<ProductionAssignmentOrderDto>> Unassign(
+        int orderId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _assignmentService.UnassignAsync(orderId, cancellationToken);
             return result is null ? NotFound() : Ok(result);
         }
         catch (InvalidOperationException exception)

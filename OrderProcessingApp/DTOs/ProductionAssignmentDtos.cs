@@ -13,7 +13,7 @@ public sealed class ProductionAssignmentOrderDto
     public string? DeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;
     public bool IsScheduled { get; set; }
-    public bool IsAssigned => DeliveryDate is not null;
+    public bool IsAssignedToProduction { get; set; }
 }
 
 public sealed class SetOrderDeliveryDateDto

@@ -16,6 +16,7 @@ public class Order
     public decimal TotalPallets { get; set; }
 
     public bool IsExcludedFromPlan { get; set; } = false;
+    public bool IsAssignedToProduction { get; set; } = false;
 
     public DistributionCentre? DistributionCentre { get; set; }
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();

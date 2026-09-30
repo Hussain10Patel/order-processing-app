@@ -1354,6 +1354,7 @@ public class OrderService : IOrderService
 
         var originalStatus = order.Status;
         order.Status = OrderStatus.Approved;
+        order.IsAssignedToProduction = false;
         TrackOrderLevelChanges(order.Id, originalStatus, order.Status, order.Notes, order.Notes, order.IsAdjusted, order.IsAdjusted, order.TotalValue, order.TotalValue, order.TotalPallets, order.TotalPallets);
 
         await _dbContext.SaveChangesAsync(cancellationToken);

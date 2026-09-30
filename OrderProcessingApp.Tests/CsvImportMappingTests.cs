@@ -66,14 +66,19 @@ public class CsvImportMappingTests
         Assert.Equal(424.28m, firstOrderDtoItem.Price);
         Assert.Equal(448m * 424.28m, firstOrderDtoItem.LineTotal);
 
-        firstOrder.Status = OrderStatus.Approved;
-        secondOrder.Status = OrderStatus.Approved;
-        await db.SaveChangesAsync();
+        await fixture.OrderService.ApproveOrderAsync(firstOrder.Id);
+        await fixture.OrderService.ApproveOrderAsync(secondOrder.Id);
 
-        var assignedRows = await new ProductionAssignmentService(db)
+        var initiallyUnassignedRows = await new ProductionAssignmentService(db)
+            .GetApprovedOrdersAsync("unassigned", null, null, null, null, null, null);
+        Assert.Contains(initiallyUnassignedRows, row => row.OrderNumber == "1204466650"
+            && !row.IsAssignedToProduction
+            && row.DeliveryDate == "2026-04-02");
+
+        await new ProductionAssignmentService(fixture.CreateDbContext()).SetDeliveryDateAsync(firstOrder.Id, new DateTime(2026, 4, 2));
+        var assignedRows = await new ProductionAssignmentService(fixture.CreateDbContext())
             .GetApprovedOrdersAsync("assigned", null, null, null, null, null, null);
-        Assert.Contains(assignedRows, row => row.OrderNumber == "1204466650" && row.IsAssigned);
-
+        Assert.Contains(assignedRows, row => row.OrderNumber == "1204466650" && row.IsAssignedToProduction);
         var production = await fixture.CreateProductionService().GetProductionAsync(null);
         var productionOrder = Assert.Single(production.Orders, x => x.OrderNumber == "1204466650");
         var productionItem = Assert.Single(productionOrder.Items);
@@ -114,7 +119,7 @@ public class CsvImportMappingTests
         approved.Status = OrderStatus.Approved;
         await db.SaveChangesAsync();
         var rows = await assignmentService.GetApprovedOrdersAsync("unassigned", null, null, null, null, null, null);
-        Assert.Contains(rows, row => row.Id == order.Id && !row.IsAssigned && row.DeliveryDate is null);
+        Assert.Contains(rows, row => row.Id == order.Id && !row.IsAssignedToProduction && row.DeliveryDate is null);
 
         var reportDate = new DateTime(2026, 3, 27);
         var report = await fixture.CreateReportService().GetSummaryByDeliveryDateAsync(reportDate);

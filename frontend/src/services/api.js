@@ -171,6 +171,12 @@ export async function setOrderDeliveryDate(orderId, deliveryDate) {
   });
 }
 
+export async function unassignProductionOrder(orderId) {
+  return request(`/api/production-assignment/orders/${orderId}/assignment`, {
+    method: "DELETE",
+  });
+}
+
 export async function getOrderById(id) {
   return request(`/api/orders/${id}`, { method: "GET" });
 }

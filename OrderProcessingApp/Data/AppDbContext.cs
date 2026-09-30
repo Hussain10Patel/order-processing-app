@@ -49,6 +49,7 @@ public class AppDbContext : DbContext
             entity.Property(x => x.IsAdjusted).HasDefaultValue(false);
             entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.IsExcludedFromPlan).HasDefaultValue(false);
+            entity.Property(x => x.IsAssignedToProduction).HasDefaultValue(false);
             entity.Property(x => x.TotalValue).HasPrecision(18, 2);
             entity.Property(x => x.TotalPallets).HasPrecision(18, 2);
             entity.HasQueryFilter(x => x.IsActive);

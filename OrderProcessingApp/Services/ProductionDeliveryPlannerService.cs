@@ -126,6 +126,10 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         plannerEvent.PlannedDeliveryDate = normalizedDate;
         plannerEvent.UpdatedAt = Now();
         order.DeliveryDate = normalizedDate;
+        if (!normalizedDate.HasValue)
+        {
+            order.IsAssignedToProduction = false;
+        }
         var snapshotOrder = context.EligibleOrders.FirstOrDefault(item => item.OrderId == order.Id);
         if (snapshotOrder is not null)
         {

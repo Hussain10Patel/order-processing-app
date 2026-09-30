@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getDistributionCentres, getProductionAssignmentOrders, setOrderDeliveryDate } from "../services/api";
+import { getDistributionCentres, getProductionAssignmentOrders, setOrderDeliveryDate, unassignProductionOrder } from "../services/api";
 
 function formatDate(value) {
   if (!value) return "-";
@@ -68,7 +68,10 @@ function ProductionPage() {
         if (current) {
           const nextOrders = Array.isArray(response) ? response : [];
           setOrders(nextOrders);
-          setDeliveryDateDrafts(Object.fromEntries(nextOrders.map((order) => [order.id, order.deliveryDate || ""])));
+          setDeliveryDateDrafts(Object.fromEntries(nextOrders.map((order) => [
+            order.id,
+            order.isAssignedToProduction ? order.deliveryDate || "" : "",
+          ])));
         }
       })
       .catch((requestError) => {
@@ -115,6 +118,19 @@ function ProductionPage() {
     }
   }
 
+  async function unassignOrder(order) {
+    setSavingOrderIds((current) => ({ ...current, [order.id]: true }));
+    setError("");
+    try {
+      await unassignProductionOrder(order.id);
+      setRefreshToken((current) => current + 1);
+    } catch (requestError) {
+      setError(requestError.message || "Failed to unassign order");
+    } finally {
+      setSavingOrderIds((current) => ({ ...current, [order.id]: false }));
+    }
+  }
+
   const dcSelectionLabel = selectedDistributionCentreIds.length === 0
     ? "All DCs"
     : `${selectedDistributionCentreIds.length} selected`;
@@ -123,7 +139,7 @@ function ProductionPage() {
     <section>
       <header className="page-header">
         <h2>Production</h2>
-        <p>Assign approved orders to production.</p>
+        <p>Assign approved orders to production by explicitly selecting a Production Assignment Date.</p>
       </header>
 
       <div className="panel" style={{ marginBottom: 16 }}>
@@ -225,38 +241,36 @@ function ProductionPage() {
                     <td>{formatDate(order.deliveryDate)}</td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <span className={order.isAssigned ? "badge green" : "badge orange"}>
-                          {order.isAssigned ? "Assigned" : "Not Assigned"}
+                        <span className={order.isAssignedToProduction ? "badge green" : "badge orange"}>
+                          {order.isAssignedToProduction ? "Assigned" : "Not Assigned"}
                         </span>
-                        <input
-                          type="date"
-                          aria-label={`Delivery Date for ${order.orderNumber}`}
-                          value={deliveryDateDrafts[order.id] || ""}
-                          onChange={(event) => setDeliveryDateDrafts((current) => ({ ...current, [order.id]: event.target.value }))}
-                        />
-                        <button
-                          type="button"
-                          className="btn-success"
-                          disabled={Boolean(savingOrderIds[order.id]) || !deliveryDateDrafts[order.id]}
-                          onClick={() => void saveDeliveryDate(order, deliveryDateDrafts[order.id])}
-                        >
-                          {savingOrderIds[order.id] ? "Saving..." : order.isAssigned ? "Save Date" : "Assign Date"}
-                        </button>
-                        {order.isAssigned && !order.isScheduled && (
+                        {!order.isAssignedToProduction && (
+                          <>
+                            <input
+                              type="date"
+                              aria-label={`Production Assignment Date for ${order.orderNumber}`}
+                              value={deliveryDateDrafts[order.id] || ""}
+                              onChange={(event) => setDeliveryDateDrafts((current) => ({ ...current, [order.id]: event.target.value }))}
+                            />
+                            <button
+                              type="button"
+                              className="btn-success"
+                              disabled={Boolean(savingOrderIds[order.id]) || !deliveryDateDrafts[order.id]}
+                              onClick={() => void saveDeliveryDate(order, deliveryDateDrafts[order.id])}
+                            >
+                              {savingOrderIds[order.id] ? "Saving..." : "Assign Date"}
+                            </button>
+                          </>
+                        )}
+                        {order.isAssignedToProduction && (
                           <button
                             type="button"
                             className="secondary"
                             disabled={Boolean(savingOrderIds[order.id])}
-                            onClick={() => {
-                              setDeliveryDateDrafts((current) => ({ ...current, [order.id]: "" }));
-                              void saveDeliveryDate(order, null);
-                            }}
+                            onClick={() => void unassignOrder(order)}
                           >
-                            Clear Date
+                            Unassign
                           </button>
-                        )}
-                        {order.isAssigned && order.isScheduled && (
-                          <span className="status-text">Unschedule before clearing date</span>
                         )}
                       </div>
                     </td>

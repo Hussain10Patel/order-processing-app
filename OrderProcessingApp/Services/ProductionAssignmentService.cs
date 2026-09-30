@@ -33,11 +33,11 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
         var normalizedAssignment = assignment?.Trim().ToLowerInvariant();
         if (normalizedAssignment == "assigned")
         {
-            query = query.Where(order => order.DeliveryDate.HasValue);
+            query = query.Where(order => order.IsAssignedToProduction);
         }
         else if (normalizedAssignment == "unassigned")
         {
-            query = query.Where(order => !order.DeliveryDate.HasValue);
+            query = query.Where(order => !order.IsAssignedToProduction);
         }
 
         if (distributionCentreIds is { Count: > 0 })
@@ -86,7 +86,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
 
     public async Task<ProductionAssignmentOrderDto?> SetDeliveryDateAsync(
         int orderId,
-        DateTime? deliveryDate,
+        DateTime deliveryDate,
         CancellationToken cancellationToken = default)
     {
         // The global Order query filter excludes soft-deleted/inactive orders.
@@ -105,10 +105,8 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
             throw new InvalidOperationException("Only approved orders can be assigned to production.");
         }
 
-        var normalizedDate = deliveryDate.HasValue
-            ? DateTime.SpecifyKind(deliveryDate.Value.Date, DateTimeKind.Unspecified)
-            : (DateTime?)null;
-        if (normalizedDate.HasValue && normalizedDate.Value < order.OrderDate.Date)
+        var normalizedDate = DateTime.SpecifyKind(deliveryDate.Date, DateTimeKind.Unspecified);
+        if (normalizedDate < order.OrderDate.Date)
         {
             throw new InvalidOperationException("Delivery date cannot be earlier than order date.");
         }
@@ -116,18 +114,14 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
         var scheduledOrder = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(schedule => schedule.OrderId == orderId, cancellationToken);
 
-        if (!normalizedDate.HasValue && scheduledOrder is not null)
-        {
-            throw new InvalidOperationException("Unschedule the order before clearing its delivery date.");
-        }
-
-        if (order.DeliveryDate != normalizedDate)
+        if (order.DeliveryDate != normalizedDate || !order.IsAssignedToProduction)
         {
             order.DeliveryDate = normalizedDate;
+            order.IsAssignedToProduction = true;
 
-            if (scheduledOrder is not null && normalizedDate.HasValue)
+            if (scheduledOrder is not null)
             {
-                scheduledOrder.DeliveryDate = normalizedDate.Value;
+                scheduledOrder.DeliveryDate = normalizedDate;
             }
 
             var plannerOrderEvents = await _dbContext.ProductionDeliveryPlanEvents
@@ -141,7 +135,35 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
                 plannerEvent.PlannedDeliveryDate = normalizedDate;
                 plannerEvent.UpdatedAt = now;
             }
+        }
 
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return MapOrder(order);
+    }
+
+    public async Task<ProductionAssignmentOrderDto?> UnassignAsync(
+        int orderId,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await _dbContext.Orders
+            .Include(entity => entity.DistributionCentre)
+            .Include(entity => entity.DeliverySchedules)
+            .FirstOrDefaultAsync(entity => entity.Id == orderId, cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        if (order.Status != OrderStatus.Approved)
+        {
+            throw new InvalidOperationException("Only approved orders can be unassigned from production.");
+        }
+
+        if (order.IsAssignedToProduction)
+        {
+            order.IsAssignedToProduction = false;
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -159,7 +181,8 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
             DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
             Status = order.Status.ToString(),
-            IsScheduled = order.DeliverySchedules.Count > 0
+            IsScheduled = order.DeliverySchedules.Count > 0,
+            IsAssignedToProduction = order.IsAssignedToProduction
         };
     }
 }

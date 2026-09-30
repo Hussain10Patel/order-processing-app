@@ -14,7 +14,7 @@ namespace OrderProcessingApp.Tests;
 public class ProductionAssignmentTests
 {
     [Fact]
-    public async Task GetApprovedOrdersAsync_DerivesAssignmentOnlyFromDeliveryDate()
+    public async Task GetApprovedOrdersAsync_ExistingDeliveryDateDoesNotImplyAssignment()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         await fixture.AddOrderAsync("UNDATED", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true);
@@ -27,14 +27,24 @@ public class ProductionAssignmentTests
         var assigned = await fixture.Service.GetApprovedOrdersAsync("assigned", null, null, null, null, null, null);
 
         Assert.Equal(2, all.Count);
-        Assert.False(Assert.Single(unassigned).IsAssigned);
-        Assert.Null(unassigned[0].DeliveryDate);
-        Assert.True(Assert.Single(assigned).IsAssigned);
-        Assert.Equal("2026-08-20", assigned[0].DeliveryDate);
+        Assert.Equal(2, unassigned.Count);
+        Assert.Empty(assigned);
+        Assert.Contains(unassigned, order => order.OrderNumber == "UNDATED" && order.DeliveryDate is null);
+        Assert.Contains(unassigned, order => order.OrderNumber == "DATED" && order.DeliveryDate == "2026-08-20");
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var dated = await db.Orders.SingleAsync(order => order.OrderNumber == "DATED");
+            dated.IsAssignedToProduction = true;
+            await db.SaveChangesAsync();
+        }
+
+        var explicitlyAssigned = await fixture.Service.GetApprovedOrdersAsync("assigned", null, null, null, null, null, null);
+        Assert.Equal("DATED", Assert.Single(explicitlyAssigned).OrderNumber);
     }
 
     [Fact]
-    public async Task AssignmentController_RequiresDeliveryDateProperty_ButAcceptsExplicitNull()
+    public async Task AssignmentController_RequiresNonNullDeliveryDateAndUnassignIsSeparate()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         var order = await fixture.AddOrderAsync("REQUEST", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true);
@@ -47,15 +57,18 @@ public class ProductionAssignmentTests
         var assignResponse = await controller.SetDeliveryDate(order.Id,
             JsonSerializer.Deserialize<SetOrderDeliveryDateDto>("{\"deliveryDate\":\"2026-10-15\"}")!, CancellationToken.None);
         Assert.IsType<OkObjectResult>(assignResponse.Result);
-        Assert.True(((ProductionAssignmentOrderDto)((OkObjectResult)assignResponse.Result!).Value!).IsAssigned);
+        Assert.True(((ProductionAssignmentOrderDto)((OkObjectResult)assignResponse.Result!).Value!).IsAssignedToProduction);
 
-        var clearResponse = await controller.SetDeliveryDate(order.Id,
+        var missingDate = await controller.SetDeliveryDate(order.Id,
             JsonSerializer.Deserialize<SetOrderDeliveryDateDto>("{\"deliveryDate\":null}")!, CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(missingDate.Result);
+
+        var clearResponse = await controller.Unassign(order.Id, CancellationToken.None);
         Assert.IsType<OkObjectResult>(clearResponse.Result);
-        Assert.False(((ProductionAssignmentOrderDto)((OkObjectResult)clearResponse.Result!).Value!).IsAssigned);
+        Assert.False(((ProductionAssignmentOrderDto)((OkObjectResult)clearResponse.Result!).Value!).IsAssignedToProduction);
 
         await using var db = fixture.CreateDbContext();
-        Assert.Null((await db.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
+        Assert.Equal(new DateTime(2026, 10, 15), (await db.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
     }
 
     [Fact]
@@ -65,7 +78,7 @@ public class ProductionAssignmentTests
         var order = await fixture.AddOrderAsync("DATE-CHANGE", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true);
 
         var firstDate = new DateTime(2026, 10, 15);
-        Assert.True((await fixture.Service.SetDeliveryDateAsync(order.Id, firstDate))?.IsAssigned);
+        Assert.True((await fixture.Service.SetDeliveryDateAsync(order.Id, firstDate))?.IsAssignedToProduction);
         var newDate = new DateTime(2026, 10, 19);
         var changed = await fixture.Service.SetDeliveryDateAsync(order.Id, newDate);
         Assert.Equal("2026-10-19", changed?.DeliveryDate);
@@ -81,11 +94,49 @@ public class ProductionAssignmentTests
     }
 
     [Fact]
-    public async Task SetDeliveryDateAsync_RejectsClearingWhileScheduled_AndKeepsSchedule()
+    public async Task ApprovedOrderWithExistingDeliveryDate_RemainsUnassignedUntilUserAssignsIt()
+    {
+        await using var fixture = await AssignmentFixture.CreateAsync();
+        var importedDate = new DateTime(2026, 10, 15);
+        var order = await fixture.AddOrderAsync("IMPORTED-DATE", OrderStatus.Approved, fixture.North.Id, deliveryDate: importedDate);
+
+        var before = await fixture.Service.GetApprovedOrdersAsync("unassigned", null, order.OrderNumber, null, null, null, null);
+        Assert.True(Assert.Single(before).DeliveryDate is not null);
+        Assert.False(before[0].IsAssignedToProduction);
+
+        var result = await fixture.Service.SetDeliveryDateAsync(order.Id, importedDate);
+        Assert.True(result?.IsAssignedToProduction);
+
+        await using var db = fixture.CreateDbContext();
+        var saved = await db.Orders.SingleAsync(x => x.Id == order.Id);
+        Assert.Equal(importedDate, saved.DeliveryDate);
+        Assert.True(saved.IsAssignedToProduction);
+    }
+
+    [Fact]
+    public async Task ApprovalResetsExplicitAssignmentButPreservesDeliveryDate()
+    {
+        await using var fixture = await AssignmentFixture.CreateAsync();
+        var importedDate = new DateTime(2026, 10, 15);
+        var order = await fixture.AddOrderAsync("APPROVAL-RESET", OrderStatus.Validated, fixture.North.Id,
+            deliveryDate: importedDate, isAssignedToProduction: true);
+
+        var result = await fixture.CreateOrderService().ApproveOrderAsync(order.Id);
+
+        Assert.Equal(OrderStatus.Approved, result?.Status);
+        Assert.Equal(importedDate.ToString("yyyy-MM-dd"), result?.DeliveryDate);
+        await using var db = fixture.CreateDbContext();
+        var saved = await db.Orders.SingleAsync(x => x.Id == order.Id);
+        Assert.False(saved.IsAssignedToProduction);
+        Assert.Equal(importedDate, saved.DeliveryDate);
+    }
+
+    [Fact]
+    public async Task UnassignScheduledOrder_KeepsDeliveryDateAndSchedule()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         var date = new DateTime(2026, 10, 15);
-        var order = await fixture.AddOrderAsync("SCHEDULED", OrderStatus.Approved, fixture.North.Id, deliveryDate: date);
+        var order = await fixture.AddOrderAsync("SCHEDULED", OrderStatus.Approved, fixture.North.Id, deliveryDate: date, isAssignedToProduction: true);
         int scheduleId;
         await using (var db = fixture.CreateDbContext())
         {
@@ -96,8 +147,9 @@ public class ProductionAssignmentTests
         }
 
         var controller = new ProductionAssignmentController(fixture.Service);
-        var clearResponse = await controller.SetDeliveryDate(order.Id, new SetOrderDeliveryDateDto { DeliveryDate = null }, CancellationToken.None);
-        Assert.IsType<UnprocessableEntityObjectResult>(clearResponse.Result);
+        var unassignResponse = await controller.Unassign(order.Id, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(unassignResponse.Result);
+        Assert.False(((ProductionAssignmentOrderDto)((OkObjectResult)unassignResponse.Result!).Value!).IsAssignedToProduction);
 
         await using var verify = fixture.CreateDbContext();
         Assert.Equal(date, (await verify.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
@@ -105,7 +157,7 @@ public class ProductionAssignmentTests
     }
 
     [Fact]
-    public async Task ClearingDeliveryDate_PreservesExistingPlannerOrderAndProductionEvents()
+    public async Task UnassigningOrder_PreservesDeliveryDateAndExistingPlannerEvents()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         var order = await fixture.AddOrderAsync("CLEAR-PLANNER", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true);
@@ -141,16 +193,18 @@ public class ProductionAssignmentTests
             productionEventId = productionEvent.Id;
         }
 
-        await fixture.Service.SetDeliveryDateAsync(order.Id, new DateTime(2026, 10, 15));
-        var result = await fixture.Service.SetDeliveryDateAsync(order.Id, null);
-        Assert.False(result?.IsAssigned);
+        var date = new DateTime(2026, 10, 15);
+        await fixture.Service.SetDeliveryDateAsync(order.Id, date);
+        var result = await fixture.Service.UnassignAsync(order.Id);
+        Assert.False(result?.IsAssignedToProduction);
 
         await using var verify = fixture.CreateDbContext();
-        Assert.Null((await verify.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
+        Assert.Equal(date, (await verify.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
         Assert.Equal(orderEventId, (await verify.ProductionDeliveryPlanEvents.SingleAsync(x => x.EventType == ProductionDeliveryPlanEventType.Order)).Id);
         var savedProductionEvent = await verify.ProductionDeliveryPlanEvents.SingleAsync(x => x.Id == productionEventId);
         Assert.Equal(ProductionDeliveryPlanEventType.Production, savedProductionEvent.EventType);
         Assert.Equal(order.Id, savedProductionEvent.OwnerOrderId);
+        Assert.Equal(date, (await verify.ProductionDeliveryPlanEvents.SingleAsync(x => x.Id == orderEventId)).PlannedDeliveryDate);
         Assert.Empty(await verify.DeliverySchedules.ToListAsync());
     }
 
@@ -216,6 +270,17 @@ public class ProductionAssignmentTests
         await fixture.AddOrderAsync("PO-NORTH-101", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true, orderDate: new DateTime(2026, 8, 12));
         await fixture.AddOrderAsync("PO-SOUTH-100", OrderStatus.Approved, fixture.South.Id, orderDate: new DateTime(2026, 8, 12), deliveryDate: new DateTime(2026, 8, 18));
         await fixture.AddOrderAsync("PO-NORTH-OLD", OrderStatus.Approved, fixture.North.Id, orderDate: new DateTime(2026, 7, 12), deliveryDate: new DateTime(2026, 8, 18));
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var assignedOrders = await db.Orders.Where(order => order.OrderNumber == "PO-NORTH-100"
+                || order.OrderNumber == "PO-SOUTH-100" || order.OrderNumber == "PO-NORTH-OLD").ToListAsync();
+            foreach (var assignedOrder in assignedOrders)
+            {
+                assignedOrder.IsAssignedToProduction = true;
+            }
+            await db.SaveChangesAsync();
+        }
 
         var result = await fixture.Service.GetApprovedOrdersAsync(
             "assigned", new[] { fixture.North.Id, fixture.South.Id }, "100",
@@ -358,7 +423,8 @@ public class ProductionAssignmentTests
         }
 
         public async Task<Order> AddOrderAsync(string orderNumber, OrderStatus status, int distributionCentreId,
-            bool isActive = true, DateTime? orderDate = null, DateTime? deliveryDate = null, bool noDeliveryDate = false)
+            bool isActive = true, DateTime? orderDate = null, DateTime? deliveryDate = null, bool noDeliveryDate = false,
+            bool isAssignedToProduction = false)
         {
             await using var db = CreateDbContext();
             var order = new Order
@@ -369,7 +435,8 @@ public class ProductionAssignmentTests
                 DistributionCentreId = distributionCentreId,
                 Status = status,
                 Source = OrderSource.CSV,
-                IsActive = isActive
+                IsActive = isActive,
+                IsAssignedToProduction = isAssignedToProduction
             };
             db.Orders.Add(order);
             await db.SaveChangesAsync();

@@ -16,6 +16,10 @@ public interface IProductionAssignmentService
 
     Task<ProductionAssignmentOrderDto?> SetDeliveryDateAsync(
         int orderId,
-        DateTime? deliveryDate,
+        DateTime deliveryDate,
+        CancellationToken cancellationToken = default);
+
+    Task<ProductionAssignmentOrderDto?> UnassignAsync(
+        int orderId,
         CancellationToken cancellationToken = default);
 }

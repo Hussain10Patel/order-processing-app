@@ -1080,7 +1080,7 @@ public class ProductionDeliveryPlannerTests
             RowNumber = 1,
             OrderNumber = orderNumber,
             OrderDate = new DateTime(2026, 8, 10),
-            DeliveryDate = null,
+            DeliveryDate = new DateTime(2026, 8, 14),
             DistributionCentre = "DC North",        // matches the fixture DC
             ProductCode = fixture.ProductA.SKUCode,  // "PA"
             ProductName = fixture.ProductA.Name,
@@ -1106,7 +1106,7 @@ public class ProductionDeliveryPlannerTests
                 .SingleAsync(x => x.OrderNumber == orderNumber);
             firstOrderId = created.Id;
             Assert.True(created.IsActive);
-            Assert.Null(created.DeliveryDate);
+            Assert.Equal(new DateTime(2026, 8, 14), created.DeliveryDate);
             Assert.False(created.IsExcludedFromPlan);
         }
 
@@ -1116,7 +1116,7 @@ public class ProductionDeliveryPlannerTests
         await using (var assignmentDb = fixture.CreateDbContext())
         {
             var assignmentService = new ProductionAssignmentService(assignmentDb);
-            Assert.True((await assignmentService.SetDeliveryDateAsync(firstOrderId, new DateTime(2026, 8, 14)))?.IsAssigned);
+            Assert.True((await assignmentService.SetDeliveryDateAsync(firstOrderId, new DateTime(2026, 8, 14)))?.IsAssignedToProduction);
         }
 
         var planner = fixture.CreatePlannerService();
@@ -1164,7 +1164,8 @@ public class ProductionDeliveryPlannerTests
             Assert.NotEqual(firstOrderId, secondOrderId);
             Assert.True(newOrder.IsActive);
             Assert.False(newOrder.IsExcludedFromPlan);
-            Assert.Null(newOrder.DeliveryDate);
+            Assert.Equal(new DateTime(2026, 8, 14), newOrder.DeliveryDate);
+            Assert.False(newOrder.IsAssignedToProduction);
 
             // No stale planner events from the old order
             Assert.False(await db.ProductionDeliveryPlanEvents
@@ -1173,6 +1174,13 @@ public class ProductionDeliveryPlannerTests
 
         // Approve new order and confirm it appears in the planner
         await orderService.ApproveOrderAsync(secondOrderId);
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var reuploaded = await db.Orders.SingleAsync(x => x.Id == secondOrderId);
+            Assert.False(reuploaded.IsAssignedToProduction);
+            Assert.Equal(new DateTime(2026, 8, 14), reuploaded.DeliveryDate);
+        }
 
         var freshPlanner = fixture.CreatePlannerService();
         var planWithSecond = await freshPlanner.GetCurrentPlanAsync();
