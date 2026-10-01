@@ -1677,6 +1677,14 @@ tr.row-unmapped-product {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
 }
 
+.dashboard-total-value-card {
+  grid-column: span 2;
+}
+
+.dashboard-total-value-card strong {
+  white-space: nowrap;
+}
+
 .dashboard-stats-grid .stat-card {
   min-width: 0;
 }
@@ -2032,6 +2040,14 @@ tr.row-unmapped-product {
 
   .dashboard-filters-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-total-value-card {
+    grid-column: span 1;
+  }
+
+  .dashboard-total-value-card strong {
+    white-space: normal;
   }
 
   .production-filters-grid {

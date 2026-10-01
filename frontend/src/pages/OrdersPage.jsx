@@ -209,6 +209,7 @@ function OrdersPage() {
   const [deleteDialog, setDeleteDialog] = useState(null);
   const [deletingOrder, setDeletingOrder] = useState(false);
   const detailRequestTokenRef = useRef(0);
+  const orderDetailsRef = useRef(null);
 
   const productsById = useMemo(() => {
     return new Map(products.map((product) => [Number(product.id), product]));
@@ -511,6 +512,18 @@ function OrdersPage() {
       setHasDirtyDetailEdits(false);
     }
   }, [highlightedOrderNumber, orders]);
+
+  useEffect(() => {
+    if (!selectedOrder || !orderDetailsRef.current) {
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    orderDetailsRef.current.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+      block: "start",
+    });
+  }, [selectedOrder?.id]);
 
   async function openOrderDetails(order) {
     if (!order?.id) {
@@ -1376,7 +1389,7 @@ function OrdersPage() {
       </div>
 
       {selectedOrder && (
-        <div className="panel order-detail-panel">
+        <div ref={orderDetailsRef} className="panel order-detail-panel">
           <div className="section-heading">
             <h3>Order Details: {selectedOrder.orderNumber}</h3>
             <div className="action-row">
