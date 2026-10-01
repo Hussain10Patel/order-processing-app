@@ -142,9 +142,9 @@ function ProductionPage() {
         <p>Assign approved orders to production by explicitly selecting a Production Assignment Date.</p>
       </header>
 
-      <div className="panel" style={{ marginBottom: 16 }}>
-        <div className="section-heading" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
-          <div style={{ minWidth: 180 }}>
+      <div className="panel production-filters-panel" style={{ marginBottom: 16 }}>
+        <div className="production-filters-grid">
+          <div>
             <label htmlFor="production-assignment-filter">Assignment</label>
             <select id="production-assignment-filter" value={assignment} onChange={(event) => setAssignment(event.target.value)}>
               <option value="all">All</option>
@@ -153,14 +153,14 @@ function ProductionPage() {
             </select>
           </div>
 
-          <div style={{ minWidth: 220 }}>
+          <div>
             <label>Distribution Centre</label>
-            <details style={{ position: "relative" }}>
-              <summary className="secondary" style={{ cursor: "pointer", padding: "8px 12px" }}>
+            <details className="production-dc-dropdown">
+              <summary>
                 {loadingCentres ? "Loading DCs..." : dcSelectionLabel}
               </summary>
-              <div className="panel" style={{ position: "absolute", zIndex: 2, top: "100%", left: 0, minWidth: "100%", maxHeight: 240, overflowY: "auto", padding: 10 }}>
-                <label style={{ display: "flex", gap: 8, whiteSpace: "nowrap" }}>
+              <div className="production-dc-options">
+                <label>
                   <input
                     type="checkbox"
                     checked={selectedDistributionCentreIds.length === 0}
@@ -169,7 +169,7 @@ function ProductionPage() {
                   All DCs
                 </label>
                 {distributionCentres.map((centre) => (
-                  <label key={centre.id} style={{ display: "flex", gap: 8, whiteSpace: "nowrap" }}>
+                  <label key={centre.id}>
                     <input
                       type="checkbox"
                       checked={selectedDistributionCentreIds.includes(Number(centre.id))}
@@ -182,7 +182,7 @@ function ProductionPage() {
             </details>
           </div>
 
-          <div style={{ minWidth: 220 }}>
+          <div>
             <label htmlFor="production-order-number">Order Number</label>
             <input
               id="production-order-number"
@@ -193,23 +193,23 @@ function ProductionPage() {
             />
           </div>
 
-          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <fieldset className="production-date-filter">
             <legend>Order Date</legend>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="production-date-fields">
               <label>From<input aria-label="Order Date From" type="date" value={orderDateFrom} onChange={(event) => setOrderDateFrom(event.target.value)} /></label>
               <label>To<input aria-label="Order Date To" type="date" value={orderDateTo} onChange={(event) => setOrderDateTo(event.target.value)} /></label>
             </div>
           </fieldset>
 
-          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+          <fieldset className="production-date-filter">
             <legend>Delivery Date</legend>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="production-date-fields">
               <label>From<input aria-label="Delivery Date From" type="date" value={deliveryDateFrom} onChange={(event) => setDeliveryDateFrom(event.target.value)} /></label>
               <label>To<input aria-label="Delivery Date To" type="date" value={deliveryDateTo} onChange={(event) => setDeliveryDateTo(event.target.value)} /></label>
             </div>
           </fieldset>
 
-          <button type="button" className="secondary" onClick={clearFilters}>Clear Filters</button>
+          <button type="button" className="secondary production-clear-filters" onClick={clearFilters}>Clear Filters</button>
         </div>
       </div>
 

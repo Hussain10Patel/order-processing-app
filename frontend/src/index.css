@@ -829,6 +829,124 @@ tr.row-unmapped-product {
   font-weight: 500;
 }
 
+.production-filters-panel {
+  min-width: 0;
+}
+
+.production-filters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.production-filters-grid > * {
+  min-width: 0;
+}
+
+.production-filters-grid input,
+.production-filters-grid select,
+.production-filters-grid .production-dc-dropdown {
+  width: 100%;
+  max-width: 100%;
+}
+
+.production-dc-dropdown {
+  position: relative;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  min-width: 0;
+}
+
+.production-dc-dropdown summary {
+  min-height: 38px;
+  padding: 8px 34px 8px 10px;
+  cursor: pointer;
+  color: #334155;
+  font-weight: 500;
+  list-style: none;
+  position: relative;
+}
+
+.production-dc-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.production-dc-dropdown summary::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid #64748b;
+  border-bottom: 2px solid #64748b;
+  transform: translateY(-65%) rotate(45deg);
+}
+
+.production-dc-dropdown[open] summary::after {
+  transform: translateY(-25%) rotate(225deg);
+}
+
+.production-dc-options {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+}
+
+.production-dc-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 4px 0;
+  white-space: normal;
+}
+
+.production-dc-options input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.production-date-filter {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.production-date-filter legend {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.production-date-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.production-date-fields label {
+  min-width: 0;
+}
+
+.production-clear-filters {
+  align-self: end;
+  width: 100%;
+}
+
 .multi-dc-options {
   border-top: 1px solid #e2e8f0;
   max-height: 180px;
@@ -1916,6 +2034,10 @@ tr.row-unmapped-product {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .production-filters-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .content-header {
     margin-top: 4px;
   }
@@ -1946,6 +2068,10 @@ tr.row-unmapped-product {
   }
 
   .dashboard-filters-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .production-filters-grid {
     grid-template-columns: 1fr;
   }
 }
