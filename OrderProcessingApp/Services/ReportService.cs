@@ -364,6 +364,226 @@ public class ReportService : IReportService
         };
     }
 
+    public async Task<DashboardDto> GetDashboardAsync(DashboardFilterDto filter, CancellationToken cancellationToken = default)
+    {
+        var query = _dbContext.Orders
+            .AsNoTracking()
+            .Include(order => order.DistributionCentre)
+            .Include(order => order.Items)
+                .ThenInclude(item => item.Product)
+            .Include(order => order.DeliverySchedules)
+            .AsQueryable();
+
+        if (filter.FromDate.HasValue)
+        {
+            var from = DateTime.SpecifyKind(filter.FromDate.Value.Date, DateTimeKind.Unspecified);
+            query = query.Where(order => order.DeliveryDate.HasValue && order.DeliveryDate.Value >= from);
+        }
+
+        if (filter.ToDate.HasValue)
+        {
+            var toExclusive = DateTime.SpecifyKind(filter.ToDate.Value.Date.AddDays(1), DateTimeKind.Unspecified);
+            query = query.Where(order => order.DeliveryDate.HasValue && order.DeliveryDate.Value < toExclusive);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.OrderNumber))
+        {
+            var orderNumber = filter.OrderNumber.Trim();
+            query = query.Where(order => order.OrderNumber.Contains(orderNumber));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductCode))
+        {
+            var productCode = filter.ProductCode.Trim();
+            query = query.Where(order => order.Items.Any(item =>
+                (item.ProductCode != null && item.ProductCode.Contains(productCode))
+                || (item.Product != null && item.Product.SKUCode.Contains(productCode))));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.ProductName))
+        {
+            var productName = filter.ProductName.Trim();
+            query = query.Where(order => order.Items.Any(item =>
+                (item.ProductName != null && item.ProductName.Contains(productName))
+                || (item.Product != null && item.Product.Name.Contains(productName))));
+        }
+
+        if (filter.DistributionCentreIds.Count > 0)
+        {
+            var centreIds = filter.DistributionCentreIds.Distinct().ToArray();
+            query = query.Where(order => centreIds.Contains(order.DistributionCentreId));
+        }
+
+        if (TryParseOrderStatus(filter.OrderStatus, out var orderStatus))
+        {
+            query = query.Where(order => order.Status == orderStatus);
+        }
+
+        var assignment = filter.ProductionAssignment?.Trim().ToLowerInvariant();
+        if (assignment == "assigned")
+        {
+            query = query.Where(order => order.IsAssignedToProduction);
+        }
+        else if (assignment is "not assigned" or "unassigned")
+        {
+            query = query.Where(order => !order.IsAssignedToProduction);
+        }
+
+        var deliveryStatus = filter.DeliveryStatus?.Trim().ToLowerInvariant();
+        if (deliveryStatus == "scheduled")
+        {
+            query = query.Where(order => order.DeliverySchedules.Any());
+        }
+        else if (deliveryStatus == "unscheduled")
+        {
+            query = query.Where(order => !order.DeliverySchedules.Any());
+        }
+
+        var orders = await query
+            .OrderByDescending(order => order.OrderDate)
+            .ThenBy(order => order.OrderNumber)
+            .ToListAsync(cancellationToken);
+
+        var today = DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Unspecified);
+        var dashboardOrders = orders.Select(order =>
+        {
+            var isScheduled = order.DeliverySchedules.Count > 0;
+            var isOverdue = order.DeliveryDate.HasValue && order.DeliveryDate.Value.Date < today && !isScheduled;
+            var hasPriceMissing = order.Items.Any(item => item.IsPriceMissing);
+            var hasPricingIssue = order.Items.Any(item => item.IsPriceMismatch);
+
+            return new
+            {
+                Order = order,
+                IsScheduled = isScheduled,
+                IsOverdue = isOverdue,
+                HasPriceMissing = hasPriceMissing,
+                HasPricingIssue = hasPricingIssue,
+                TotalQuantity = order.Items.Sum(item => item.Quantity),
+                TotalPallets = order.TotalPallets > 0 ? order.TotalPallets : order.Items.Sum(item => item.Pallets)
+            };
+        }).ToList();
+
+        var exception = filter.Exception?.Trim().ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(exception) && exception != "any")
+        {
+            dashboardOrders = dashboardOrders.Where(row => exception switch
+            {
+                "not assigned" or "unassigned" => !row.Order.IsAssignedToProduction,
+                "flagged" => row.Order.Status == OrderStatus.Flagged,
+                "no price configured" => row.HasPriceMissing,
+                "pricing issue" => row.HasPricingIssue,
+                "overdue" => row.IsOverdue,
+                _ => true
+            }).ToList();
+        }
+
+        var mappedOrders = dashboardOrders.Select(row => new DashboardOrderDto
+        {
+            OrderNumber = row.Order.OrderNumber,
+            DistributionCentre = row.Order.DistributionCentre?.Name ?? "Unknown",
+            OrderDate = row.Order.OrderDate.ToString("yyyy-MM-dd"),
+            DeliveryDate = row.Order.DeliveryDate?.ToString("yyyy-MM-dd"),
+            IsAssignedToProduction = row.Order.IsAssignedToProduction,
+            IsScheduled = row.IsScheduled,
+            TotalQuantity = row.TotalQuantity,
+            TotalPallets = row.TotalPallets,
+            TotalValue = row.Order.TotalValue,
+            Status = row.Order.Status.ToString()
+        }).ToList();
+
+        return new DashboardDto
+        {
+            TotalOrders = mappedOrders.Count,
+            TotalOrderValue = mappedOrders.Sum(order => order.TotalValue),
+            AssignedOrders = mappedOrders.Count(order => order.IsAssignedToProduction),
+            UnassignedOrders = mappedOrders.Count(order => !order.IsAssignedToProduction),
+            ScheduledOrders = mappedOrders.Count(order => order.IsScheduled),
+            UnscheduledOrders = mappedOrders.Count(order => !order.IsScheduled),
+            FlaggedOrders = mappedOrders.Count(order => order.Status == OrderStatus.Flagged.ToString()),
+            OverdueOrders = dashboardOrders.Count(row => row.IsOverdue),
+            Orders = mappedOrders,
+            DistributionCentres = dashboardOrders
+                .GroupBy(row => row.Order.DistributionCentre?.Name ?? "Unknown")
+                .Select(group => new DashboardDistributionCentreDto
+                {
+                    DistributionCentre = group.Key,
+                    TotalOrders = group.Count(),
+                    Assigned = group.Count(row => row.Order.IsAssignedToProduction),
+                    NotAssigned = group.Count(row => !row.Order.IsAssignedToProduction),
+                    Scheduled = group.Count(row => row.IsScheduled),
+                    Unscheduled = group.Count(row => !row.IsScheduled),
+                    TotalValue = group.Sum(row => row.Order.TotalValue)
+                })
+                .OrderBy(row => row.DistributionCentre)
+                .ToList(),
+            RequiresAttention = dashboardOrders
+                .SelectMany(row => GetDashboardExceptions(row.Order, row.HasPriceMissing, row.HasPricingIssue, row.IsOverdue)
+                    .Select(item => new DashboardAttentionDto
+                    {
+                        OrderNumber = row.Order.OrderNumber,
+                        DistributionCentre = row.Order.DistributionCentre?.Name ?? "Unknown",
+                        Exception = item,
+                        TotalValue = row.Order.TotalValue
+                    }))
+                .OrderBy(row => row.OrderNumber)
+                .ToList(),
+            Products = dashboardOrders
+                .SelectMany(row => row.Order.Items.Select(item => new
+                {
+                    ProductName = item.ProductName ?? item.Product?.Name ?? string.Empty,
+                    SKUCode = item.ProductCode ?? item.Product?.SKUCode ?? string.Empty,
+                    item.Quantity,
+                    Revenue = item.Quantity * item.Price,
+                    item.Pallets
+                }))
+                .GroupBy(item => new { item.ProductName, item.SKUCode })
+                .Select(group => new DashboardProductDto
+                {
+                    ProductName = group.Key.ProductName,
+                    SKUCode = group.Key.SKUCode,
+                    TotalQuantity = group.Sum(item => item.Quantity),
+                    TotalRevenue = group.Sum(item => item.Revenue),
+                    TotalPallets = group.Sum(item => item.Pallets)
+                })
+                .OrderByDescending(item => item.TotalRevenue)
+                .ToList()
+        };
+    }
+
+    private static bool TryParseOrderStatus(string? value, out OrderStatus status)
+    {
+        status = default;
+        if (string.IsNullOrWhiteSpace(value) || value.Equals("any", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (Enum.TryParse(value, true, out status))
+        {
+            return true;
+        }
+
+        if (int.TryParse(value, out var numeric) && Enum.IsDefined(typeof(OrderStatus), numeric))
+        {
+            status = (OrderStatus)numeric;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static List<string> GetDashboardExceptions(Order order, bool hasPriceMissing, bool hasPricingIssue, bool isOverdue)
+    {
+        var exceptions = new List<string>();
+        if (!order.IsAssignedToProduction) exceptions.Add("Not Assigned");
+        if (order.Status == OrderStatus.Flagged) exceptions.Add("Flagged");
+        if (hasPriceMissing) exceptions.Add("No Price Configured");
+        if (hasPricingIssue) exceptions.Add("Pricing Issue");
+        if (isOverdue) exceptions.Add("Overdue");
+        return exceptions;
+    }
+
     private static string ComputeReportStatus(
         Order order,
         IReadOnlyDictionary<int, List<string>> schedulesByOrder,

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
+import DashboardPage from "./pages/DashboardPage";
 import DeliveryPage from "./pages/DeliveryPage";
 import OrdersPage from "./pages/OrdersPage";
 import ProductionCalendarPage from "./pages/ProductionCalendarPage";
@@ -14,7 +15,8 @@ function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<OrdersPage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/orders" element={<OrdersPage />} />
         <Route path="/upload" element={<UploadCsvPage />} />
         <Route path="/production" element={<ProductionPage />} />
         <Route path="/production-delivery" element={<ProductionDeliveryPage />} />

@@ -12,4 +12,5 @@ public interface IReportService
     Task<List<DailyDeliveryGroupDto>> GetDailyDeliveryReportAsync(DateTime date, CancellationToken cancellationToken = default);
     Task<OrdersReportDto> GetOrdersReportAsync(CancellationToken cancellationToken = default);
     Task<SalesReportDto> GetSalesSummaryAsync(CancellationToken cancellationToken = default);
+    Task<DashboardDto> GetDashboardAsync(DashboardFilterDto filter, CancellationToken cancellationToken = default);
 }

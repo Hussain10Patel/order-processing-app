@@ -4,6 +4,7 @@ import TaskDropdown from "./TaskDropdown";
 
 const links = [
   { to: "/dashboard", label: "Dashboard" },
+  { to: "/orders", label: "Orders" },
   { to: "/upload", label: "Upload CSV" },
   { to: "/production", label: "Production" },
   { to: "/production-delivery", label: "Production / Delivery" },

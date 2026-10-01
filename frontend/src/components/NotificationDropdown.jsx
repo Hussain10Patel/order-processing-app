@@ -251,7 +251,7 @@ function NotificationDropdown() {
     (entry) => {
       markAllAsRead(entries);
       setIsOpen(false);
-      navigate("/dashboard", {
+      navigate("/orders", {
         state: {
           focusOrderNumber: entry.orderNumber || "",
           focusToken: Date.now(),

@@ -492,6 +492,20 @@ export async function getOrdersReport() {
   return request("/api/reports/orders", { method: "GET" });
 }
 
+export async function getDashboardOverview(filters = {}) {
+  const searchParams = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (key === "distributionCentreIds" && Array.isArray(value)) {
+      value.forEach((id) => searchParams.append(key, String(id)));
+      return;
+    }
+    searchParams.append(key, String(value));
+  });
+  const query = searchParams.toString();
+  return request(`/api/reports/dashboard${query ? `?${query}` : ""}`, { method: "GET" });
+}
+
 export async function getSalesReport() {
   return request("/api/reports/sales", { method: "GET" });
 }
@@ -715,6 +729,7 @@ export const api = {
   getSupplierDeliverySummary,
   getDailyDeliveryReport,
   getOrdersReport,
+  getDashboardOverview,
   getSalesReport,
   getReportDates,
   getReportSummary,
@@ -747,6 +762,8 @@ export function getStatusLabel(status) {
     3: "Flagged",
     4: "Approved",
     5: "Processed",
+    6: "In Production",
+    7: "Scheduled",
   };
 
   const key = Number(status);

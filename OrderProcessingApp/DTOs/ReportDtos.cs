@@ -39,6 +39,78 @@ public class OrdersReportDto
     public List<OrdersByDcDto> ByDistributionCentre { get; set; } = new();
 }
 
+public class DashboardFilterDto
+{
+    public DateTime? FromDate { get; set; }
+    public DateTime? ToDate { get; set; }
+    public string? OrderNumber { get; set; }
+    public string? ProductCode { get; set; }
+    public string? ProductName { get; set; }
+    public List<int> DistributionCentreIds { get; set; } = new();
+    public string? OrderStatus { get; set; }
+    public string? ProductionAssignment { get; set; }
+    public string? DeliveryStatus { get; set; }
+    public string? Exception { get; set; }
+}
+
+public class DashboardDto
+{
+    public int TotalOrders { get; set; }
+    public decimal TotalOrderValue { get; set; }
+    public int AssignedOrders { get; set; }
+    public int UnassignedOrders { get; set; }
+    public int ScheduledOrders { get; set; }
+    public int UnscheduledOrders { get; set; }
+    public int FlaggedOrders { get; set; }
+    public int OverdueOrders { get; set; }
+    public List<DashboardOrderDto> Orders { get; set; } = new();
+    public List<DashboardDistributionCentreDto> DistributionCentres { get; set; } = new();
+    public List<DashboardAttentionDto> RequiresAttention { get; set; } = new();
+    public List<DashboardProductDto> Products { get; set; } = new();
+}
+
+public class DashboardOrderDto
+{
+    public string OrderNumber { get; set; } = string.Empty;
+    public string DistributionCentre { get; set; } = string.Empty;
+    public string OrderDate { get; set; } = string.Empty;
+    public string? DeliveryDate { get; set; }
+    public bool IsAssignedToProduction { get; set; }
+    public bool IsScheduled { get; set; }
+    public decimal TotalQuantity { get; set; }
+    public decimal TotalPallets { get; set; }
+    public decimal TotalValue { get; set; }
+    public string Status { get; set; } = string.Empty;
+}
+
+public class DashboardDistributionCentreDto
+{
+    public string DistributionCentre { get; set; } = string.Empty;
+    public int TotalOrders { get; set; }
+    public int Assigned { get; set; }
+    public int NotAssigned { get; set; }
+    public int Scheduled { get; set; }
+    public int Unscheduled { get; set; }
+    public decimal TotalValue { get; set; }
+}
+
+public class DashboardAttentionDto
+{
+    public string OrderNumber { get; set; } = string.Empty;
+    public string DistributionCentre { get; set; } = string.Empty;
+    public string Exception { get; set; } = string.Empty;
+    public decimal TotalValue { get; set; }
+}
+
+public class DashboardProductDto
+{
+    public string ProductName { get; set; } = string.Empty;
+    public string SKUCode { get; set; } = string.Empty;
+    public decimal TotalQuantity { get; set; }
+    public decimal TotalRevenue { get; set; }
+    public decimal TotalPallets { get; set; }
+}
+
 public class OrdersByStatusDto
 {
     public string Status { get; set; } = string.Empty;

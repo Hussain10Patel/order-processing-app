@@ -1283,7 +1283,7 @@ function OrdersPage() {
   return (
     <section>
       <header className="page-header">
-        <h2>Orders Dashboard</h2>
+        <h2>Orders</h2>
         <p>CSV to order verification, adjustments, and delivery readiness.</p>
         {refreshNotice && <p className="status-text order-refresh-notice">{refreshNotice}</p>}
       </header>

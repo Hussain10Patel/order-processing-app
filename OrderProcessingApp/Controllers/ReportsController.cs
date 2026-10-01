@@ -28,6 +28,17 @@ public class ReportsController : ControllerBase
         return Ok(new { orders, sales });
     }
 
+    [HttpGet("dashboard")]
+    public async Task<ActionResult<DashboardDto>> Dashboard([FromQuery] DashboardFilterDto filter, CancellationToken cancellationToken)
+    {
+        if (filter.FromDate.HasValue && filter.ToDate.HasValue && filter.FromDate.Value.Date > filter.ToDate.Value.Date)
+        {
+            return BadRequest(new { message = "From date must be on or before To date." });
+        }
+
+        return Ok(await _reportService.GetDashboardAsync(filter, cancellationToken));
+    }
+
     // ── Summary/report endpoints (JSON + CSV), not detailed operational exports ──
 
     [HttpGet("available-dates")]
