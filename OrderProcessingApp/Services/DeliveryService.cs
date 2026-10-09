@@ -11,12 +11,14 @@ public class DeliveryService : IDeliveryService
     private readonly AppDbContext _dbContext;
     private readonly IAuditService _auditService;
     private readonly ILogger<DeliveryService> _logger;
+    private readonly DeliveryClock? _clock;
 
-    public DeliveryService(AppDbContext dbContext, IAuditService auditService, ILogger<DeliveryService> logger)
+    public DeliveryService(AppDbContext dbContext, IAuditService auditService, ILogger<DeliveryService> logger, DeliveryClock? clock = null)
     {
         _dbContext = dbContext;
         _auditService = auditService;
         _logger = logger;
+        _clock = clock;
     }
 
     public async Task<DeliveryScheduleDto> ScheduleDeliveryAsync(int orderId, DateTime deliveryDate, string? notes, CancellationToken cancellationToken = default)
@@ -40,7 +42,7 @@ public class DeliveryService : IDeliveryService
         {
             throw new InvalidOperationException($"Delivery scheduling is only allowed for {OrderWorkflowStatusRules.DeliveryEligibleStatusLabel} orders. Current status: {order.Status}.");
         }
-        DeliveryWorkflowMutations.EnsureNotDispatched(order);
+        DeliveryWorkflowMutations.EnsureNotDispatched(order, _clock?.UtcNow);
 
         if (normalized < order.OrderDate.Date)
         {
@@ -115,7 +117,7 @@ public class DeliveryService : IDeliveryService
                 "DeliveryDate",
                 order.DeliveryDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
                 normalized.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-            order.DeliveryDate = normalized;
+            DeliveryWorkflowMutations.UpdateScheduledDate(order, normalized, _clock?.BusinessTimeZone);
         }
 
         var plannerOrderEvents = await _dbContext.ProductionDeliveryPlanEvents
@@ -149,6 +151,7 @@ public class DeliveryService : IDeliveryService
             DeliveryDate = existing.DeliveryDate.ToString("yyyy-MM-dd"),
             Status = existing.Status,
             OrderStatus = order.Status.ToString(),
+            EnRouteAtUtc = order.EnRouteAtUtc,
             IsOrderProcessed = order.Status == OrderStatus.Processed,
             Notes = existing.Notes,
             TotalPallets = order.TotalPallets > 0 ? order.TotalPallets : order.Items.Sum(x => x.Pallets)
@@ -165,20 +168,20 @@ public class DeliveryService : IDeliveryService
         {
             throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
         }
-        DeliveryWorkflowMutations.EnsureNotDispatched(order);
+        DeliveryWorkflowMutations.EnsureNotDispatched(order, _clock?.UtcNow);
 
         var existing = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == orderId, cancellationToken);
 
         if (existing is null)
         {
-            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
+            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order, _clock?.UtcNow);
             await _dbContext.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("[DELIVERY UNSCHEDULE] OrderId={OrderId} already unscheduled.", orderId);
             return false;
         }
 
-        DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
+        DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order, _clock?.UtcNow);
 
         _auditService.TrackChange(
             "Delivery",
@@ -260,6 +263,7 @@ public class DeliveryService : IDeliveryService
                         DeliveryDate = schedule.DeliveryDate.ToString("yyyy-MM-dd"),
                         Status = schedule.Status,
                         OrderStatus = order.Status.ToString(),
+                        EnRouteAtUtc = order.EnRouteAtUtc,
                         IsOrderProcessed = order.Status == OrderStatus.Processed,
                         Notes = schedule.Notes,
                         TotalPallets = order.Items.Sum(i => i.Pallets)

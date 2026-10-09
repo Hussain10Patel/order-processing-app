@@ -14,7 +14,7 @@ import {
   updateProductionDeliveryOrderDate,
 } from "../services/api";
 import StatusLabel from "../components/StatusLabel";
-import { formatBusinessDateTime } from "../utils/date";
+import { businessTimeInput, formatBusinessDateTime, isDeliveryLocked } from "../utils/date";
 
 const EMPTY_EVENTS = [];
 
@@ -61,6 +61,7 @@ function ProductionDeliveryPage() {
   const [addingToPlan, setAddingToPlan] = useState(null);
   const [dispatchEventId, setDispatchEventId] = useState(null);
   const [durationHours, setDurationHours] = useState("");
+  const [departureTime, setDepartureTime] = useState("");
   const plannerContainerRef = useRef(null);
   const plannerTableRef = useRef(null);
   const dirtyDateIdsRef = useRef(new Set());
@@ -255,6 +256,10 @@ function ProductionDeliveryPage() {
   }
 
   async function confirmEnRoute(event) {
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(departureTime)) {
+      setError("Enter a valid departure time on the saved scheduled delivery date.");
+      return;
+    }
     const hours = Number(durationHours);
     if (!durationHours.trim() || !Number.isFinite(hours) || hours <= 0) {
       setError("Enter a valid positive delivery duration in hours.");
@@ -263,7 +268,7 @@ function ProductionDeliveryPage() {
     setEventSaving(event.id, "dispatch", true);
     setError("");
     try {
-      await setOrderEnRoute(event.orderId, hours);
+      await setOrderEnRoute(event.orderId, departureTime, hours);
       setDispatchEventId(null);
       setDurationHours("");
       await loadPlan();
@@ -421,7 +426,7 @@ function ProductionDeliveryPage() {
                           <input
                             type="date"
                             aria-label={`Scheduled Delivery Date for ${event.orderNumber}`}
-                            disabled={["EnRoute", "Delivered"].includes(event.status)}
+                            disabled={isDeliveryLocked(event.status, event.enRouteAtUtc)}
                             min={event.orderDate}
                             value={pendingDates[event.id] || ""}
                             onChange={(e) => updatePendingDate(event.id, e.target.value)}
@@ -447,13 +452,24 @@ function ProductionDeliveryPage() {
                       <td className="sticky-action-col">
                         <div className="action-stack">
                           {isOrder && (
-                            <button type="button" onClick={() => void saveOrderDate(event)} disabled={isSaving(event.id, "date") || !event.orderId || ["EnRoute", "Delivered"].includes(event.status)}>
+                            <button type="button" onClick={() => void saveOrderDate(event)} disabled={isSaving(event.id, "date") || !event.orderId || isDeliveryLocked(event.status, event.enRouteAtUtc)}>
                               {isSaving(event.id, "date") ? "Saving..." : "Save Date"}
                             </button>
                           )}
-                          {isOrder && event.canSetEnRoute && (
+                          {isOrder && event.canSetEnRoute && !isDeliveryLocked(event.status, event.enRouteAtUtc) && (
                             dispatchEventId === event.id ? (
                               <form onSubmit={(submitEvent) => { submitEvent.preventDefault(); void confirmEnRoute(event); }}>
+                                <div>Departure on {formatDate(event.plannedDeliveryDate)} ({plan.businessTimeZone})</div>
+                                <label>
+                                  Departure time
+                                  <input
+                                    aria-label={`Departure time for ${event.orderNumber}`}
+                                    type="time"
+                                    required
+                                    value={departureTime}
+                                    onChange={(inputEvent) => setDepartureTime(inputEvent.target.value)}
+                                  />
+                                </label>
                                 <label>
                                   Expected duration (hours)
                                   <input
@@ -465,11 +481,16 @@ function ProductionDeliveryPage() {
                                     onChange={(inputEvent) => setDurationHours(inputEvent.target.value)}
                                   />
                                 </label>
-                                <button type="submit" disabled={isSaving(event.id, "dispatch")}>Confirm En Route</button>
+                                <button type="submit" disabled={isSaving(event.id, "dispatch")}>Save Departure</button>
                                 <button type="button" className="secondary" disabled={isSaving(event.id, "dispatch")} onClick={() => setDispatchEventId(null)}>Cancel</button>
                               </form>
                             ) : (
-                              <button type="button" onClick={() => { setDispatchEventId(event.id); setDurationHours(""); setError(""); }}>Set En Route</button>
+                              <button type="button" onClick={() => {
+                                setDispatchEventId(event.id);
+                                setDepartureTime(businessTimeInput(event.enRouteAtUtc, plan.businessTimeZone));
+                                setDurationHours(event.expectedDeliveryDurationHours == null ? "" : String(event.expectedDeliveryDurationHours));
+                                setError("");
+                              }}>Set En Route</button>
                             )
                           )}
                           {(isProduction || isAdjustment) && (
@@ -500,6 +521,7 @@ function ProductionDeliveryPage() {
                       <td className="sticky-col sticky-col-1"><strong>STOCK AFTER</strong></td>
                       <td className="sticky-col sticky-col-2">{isOrder && <StatusLabel status={event.status || event.scheduleStatus} />}</td>
                       <td className="sticky-col sticky-col-3">
+                        {isOrder && event.enRouteAtUtc && <div>Departure: {formatBusinessDateTime(event.enRouteAtUtc, plan.businessTimeZone)}</div>}
                         {isOrder && event.expectedDeliveryDurationHours != null && <span>{event.expectedDeliveryDurationHours} hours from dispatch</span>}
                       </td>
                       <td className="sticky-col sticky-col-4">
@@ -524,7 +546,7 @@ function ProductionDeliveryPage() {
                             + Add Production
                           </button>
                           {isOrder && (
-                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.canSchedule || !event.orderId || !(pendingDates[event.id] || event.plannedDeliveryDate)}>
+                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.canSchedule || !event.orderId || isDeliveryLocked(event.status, event.enRouteAtUtc) || !(pendingDates[event.id] || event.plannedDeliveryDate)}>
                               {schedulingId === event.id ? "Scheduling..." : "Schedule"}
                             </button>
                           )}

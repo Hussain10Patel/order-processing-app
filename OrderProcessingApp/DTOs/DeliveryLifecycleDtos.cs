@@ -5,6 +5,10 @@ namespace OrderProcessingApp.DTOs;
 public sealed class SetEnRouteDto
 {
     [Required]
+    [RegularExpression(@"^(?:[01]\d|2[0-3]):[0-5]\d$")]
+    public string? DepartureTime { get; set; }
+
+    [Required]
     public decimal? DurationHours { get; set; }
 }
 

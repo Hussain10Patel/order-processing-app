@@ -18,6 +18,175 @@ namespace OrderProcessingApp.Tests;
 public class DeliveryLifecycleTests
 {
     [Fact]
+    public async Task PlannedDeparture_UsesSavedDateAndJohannesburgTime_TransitionsAtExactBoundaries()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var date = new DateTime(2026, 10, 16);
+        var departure = new DateTimeOffset(2026, 10, 16, 8, 30, 0, TimeSpan.Zero);
+        var expected = departure.AddHours(2.5);
+        var id = await fixture.AddOrderAsync(date: date);
+        await using (var db = fixture.CreateDb())
+        {
+            var result = await fixture.Service(db).SetEnRouteAsync(id, "10:30", 2.5m);
+            Assert.Equal("Scheduled", result.Status);
+            Assert.Equal(departure, result.EnRouteAtUtc);
+            Assert.Equal(expected, result.ExpectedDeliveryAtUtc);
+            Assert.Equal(TimeSpan.Zero, result.EnRouteAtUtc!.Value.Offset);
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+        }
+        fixture.Time.Now = departure.AddTicks(-1);
+        await using (var db = fixture.CreateDb())
+        {
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+            Assert.Equal(OrderStatus.Scheduled, (await db.Orders.SingleAsync()).Status);
+            Assert.Equal("Scheduled", (await db.DeliverySchedules.SingleAsync()).Status);
+            var report = await new ReportService(db, fixture.Clock).GetSummaryByDeliveryDateAsync(date);
+            Assert.Equal("Scheduled", Assert.Single(report.DeliverySummary).Status);
+            Assert.Equal(departure, Assert.Single(report.DeliverySummary).EnRouteAtUtc);
+        }
+        fixture.Time.Now = departure;
+        await using (var db = fixture.CreateDb())
+        {
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+            Assert.Equal(OrderStatus.EnRoute, (await db.Orders.SingleAsync()).Status);
+            Assert.Equal("EnRoute", (await db.DeliverySchedules.SingleAsync()).Status);
+            Assert.Equal("EnRoute", Assert.Single((await new ReportService(db).GetSummaryByDeliveryDateAsync(date)).DeliverySummary).Status);
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+        }
+        fixture.Time.Now = expected.AddTicks(-1);
+        await using (var db = fixture.CreateDb())
+        {
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+            Assert.Equal(OrderStatus.EnRoute, (await db.Orders.SingleAsync()).Status);
+        }
+        fixture.Time.Now = expected;
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(1, await fixture.Service(verify).CompleteDueOrdersAsync());
+        Assert.Equal(0, await fixture.Service(verify).CompleteDueOrdersAsync());
+        var saved = await verify.Orders.SingleAsync();
+        Assert.Equal(OrderStatus.Delivered, saved.Status);
+        Assert.Equal(date, saved.DeliveryDate);
+        Assert.Equal(departure, saved.EnRouteAtUtc);
+        Assert.Equal(expected, saved.ExpectedDeliveryAtUtc);
+        Assert.Equal(expected, saved.DeliveredAtUtc);
+        Assert.Equal(2.5m, saved.ExpectedDeliveryDurationHours);
+        Assert.True(saved.IsDeliveryEstimated);
+        Assert.Equal("Delivered", (await verify.DeliverySchedules.SingleAsync()).Status);
+        Assert.Equal("Delivered", Assert.Single((await new ReportService(verify).GetSummaryByDeliveryDateAsync(date)).DeliverySummary).Status);
+        Assert.Equal(2, await verify.AuditLogs.CountAsync(x => x.Field == "Status"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("24:00")]
+    [InlineData("10:60")]
+    [InlineData("10:30:00")]
+    [InlineData("2026-10-16T10:30")]
+    [InlineData("invalid")]
+    public async Task InvalidDepartureTime_IsRejectedWithoutPersistingTiming(string? departureTime)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var id = await fixture.AddOrderAsync();
+        await using var db = fixture.CreateDb();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, departureTime, 2.5m));
+        var order = await db.Orders.SingleAsync();
+        Assert.Equal(OrderStatus.Scheduled, order.Status);
+        Assert.Null(order.EnRouteAtUtc);
+        Assert.Null(order.ExpectedDeliveryAtUtc);
+        Assert.Null(order.ExpectedDeliveryDurationHours);
+    }
+
+    [Fact]
+    public async Task FutureDeparture_CanBeEditedBeforeDeparture_AndIsNotResetByRepeatingRequest()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var id = await fixture.AddOrderAsync(date: new DateTime(2026, 10, 16));
+        await using (var db = fixture.CreateDb())
+        {
+            await fixture.Service(db).SetEnRouteAsync(id, "10:30", 2.5m);
+        }
+        fixture.Time.Now = fixture.Time.Now.AddDays(1);
+        await using var reopened = fixture.CreateDb();
+        var repeated = await fixture.Service(reopened).SetEnRouteAsync(id, "10:30", 2.5m);
+        Assert.Equal(new DateTimeOffset(2026, 10, 16, 8, 30, 0, TimeSpan.Zero), repeated.EnRouteAtUtc);
+        var updated = await fixture.Service(reopened).SetEnRouteAsync(id, "11:00", 1.5m);
+        Assert.Equal("Scheduled", updated.Status);
+        Assert.Equal(new DateTimeOffset(2026, 10, 16, 9, 0, 0, TimeSpan.Zero), updated.EnRouteAtUtc);
+        Assert.Equal(updated.EnRouteAtUtc!.Value.AddHours(1.5), updated.ExpectedDeliveryAtUtc);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnassignOrUnscheduleBeforeDeparture_ClearsPendingTimerAndPreservesDates(bool unassign)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var id = await fixture.AddOrderAsync(date: new DateTime(2026, 10, 16));
+        await using (var db = fixture.CreateDb())
+        {
+            await fixture.Service(db).SetEnRouteAsync(id, "10:30", 2.5m);
+            if (unassign) await new ProductionAssignmentService(db, clock: fixture.Clock).UnassignAsync(id);
+            else await fixture.DeliveryService(db).UnscheduleDeliveryAsync(id);
+        }
+        fixture.Time.Now = new DateTimeOffset(2026, 10, 17, 0, 0, 0, TimeSpan.Zero);
+        await using var verify = fixture.CreateDb();
+        Assert.Equal(0, await fixture.Service(verify).CompleteDueOrdersAsync());
+        var order = await verify.Orders.SingleAsync();
+        Assert.Equal(OrderStatus.Approved, order.Status);
+        Assert.Equal(new DateTime(2026, 10, 16), order.DeliveryDate);
+        Assert.Equal(new DateTime(2026, 10, 10), order.OriginalCsvDeliveryDate);
+        Assert.Null(order.EnRouteAtUtc);
+        Assert.Null(order.ExpectedDeliveryAtUtc);
+        Assert.Null(order.ExpectedDeliveryDurationHours);
+    }
+
+    [Fact]
+    public async Task DepartureReachedBeforeWorkerCheck_BlocksUnassignUnscheduleRescheduleAndTimerChanges()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var id = await fixture.AddOrderAsync();
+        await using var db = fixture.CreateDb();
+        await fixture.Service(db).SetEnRouteAsync(id, "12:30", 2.5m);
+        fixture.Time.Now = fixture.Time.Now.AddMinutes(30);
+        Assert.Equal(OrderStatus.Scheduled, (await db.Orders.SingleAsync()).Status);
+        var assignment = new ProductionAssignmentService(db, clock: fixture.Clock);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => assignment.UnassignAsync(id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => assignment.SetDeliveryDateAsync(id, new DateTime(2026, 10, 17)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.DeliveryService(db).UnscheduleDeliveryAsync(id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.DeliveryService(db).ScheduleDeliveryAsync(id, new DateTime(2026, 10, 17), null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, "13:00", 2.5m));
+    }
+
+    [Theory]
+    [InlineData("assignment")]
+    [InlineData("schedule")]
+    [InlineData("planner")]
+    public async Task DateChangesBeforeDeparture_RetainLocalDepartureTimeAndRecalculateExpectedTimestamp(string surface)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var id = await fixture.AddOrderAsync(date: new DateTime(2026, 10, 16));
+        var newDate = new DateTime(2026, 10, 17);
+        await using var db = fixture.CreateDb();
+        await fixture.Service(db).SetEnRouteAsync(id, "10:30", 2.5m);
+        if (surface == "assignment") await new ProductionAssignmentService(db, clock: fixture.Clock).SetDeliveryDateAsync(id, newDate);
+        else if (surface == "schedule") await fixture.DeliveryService(db).ScheduleDeliveryAsync(id, newDate, null);
+        else
+        {
+            var planner = new ProductionDeliveryPlannerService(db, new ProductionService(db, NullLogger<ProductionService>.Instance), fixture.Clock);
+            var row = Assert.Single((await planner.GetCurrentPlanAsync()).Events, x => x.OrderId == id);
+            await planner.UpdateOrderDeliveryDateAsync(row.Id, new ProductionDeliveryPlanDeliveryDateUpdateDto { DeliveryDate = newDate });
+        }
+        await using var verify = fixture.CreateDb();
+        var order = await verify.Orders.SingleAsync();
+        Assert.Equal(newDate, order.DeliveryDate);
+        Assert.Equal(new DateTimeOffset(2026, 10, 17, 8, 30, 0, TimeSpan.Zero), order.EnRouteAtUtc);
+        Assert.Equal(new DateTimeOffset(2026, 10, 17, 11, 0, 0, TimeSpan.Zero), order.ExpectedDeliveryAtUtc);
+        Assert.Equal(OrderStatus.Scheduled, order.Status);
+        Assert.Equal(newDate, (await verify.DeliverySchedules.SingleAsync()).DeliveryDate);
+    }
+
+    [Fact]
     public async Task Assignment_PersistsSelectedDateOriginalDateStatusAndSchedule_AcrossRefreshAndPlanner()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -92,19 +261,21 @@ public class DeliveryLifecycleTests
         var started = fixture.Time.GetUtcNow();
         await using (var db = fixture.CreateDb())
         {
-            var result = await fixture.Service(db).SetEnRouteAsync(id, duration);
-            Assert.Equal("EnRoute", result.Status);
+            var result = await fixture.Service(db).SetEnRouteAsync(id, "12:00", duration);
+            Assert.Equal("Scheduled", result.Status);
             Assert.Equal(started.AddHours(hours), result.ExpectedDeliveryAtUtc);
+            Assert.Equal(0, await fixture.Service(db).CompleteDueOrdersAsync());
+            Assert.Equal(OrderStatus.EnRoute, (await db.Orders.SingleAsync()).Status);
         }
         fixture.Time.Now = started.AddMinutes(15);
         await using var reopened = fixture.CreateDb();
-        var repeated = await fixture.Service(reopened).SetEnRouteAsync(id, duration);
+        var repeated = await fixture.Service(reopened).SetEnRouteAsync(id, "12:00", duration);
         Assert.Equal(started, repeated.EnRouteAtUtc);
         Assert.Equal(started.AddHours(hours), repeated.ExpectedDeliveryAtUtc);
         Assert.Equal(duration, repeated.ExpectedDeliveryDurationHours);
         Assert.Equal(0, await fixture.Service(reopened).CompleteDueOrdersAsync());
         Assert.Equal("EnRoute", (await reopened.DeliverySchedules.SingleAsync()).Status);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(reopened).SetEnRouteAsync(id, duration + 1));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(reopened).SetEnRouteAsync(id, "12:00", duration + 1));
     }
 
     [Theory]
@@ -117,8 +288,8 @@ public class DeliveryLifecycleTests
         var id = await fixture.AddOrderAsync();
         await using var db = fixture.CreateDb();
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            fixture.Service(db).SetEnRouteAsync(id, hours.HasValue ? (decimal)hours.Value : null));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, decimal.MaxValue));
+            fixture.Service(db).SetEnRouteAsync(id, "12:00", hours.HasValue ? (decimal)hours.Value : null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, "12:00", decimal.MaxValue));
         await using var verify = fixture.CreateDb();
         var order = await verify.Orders.SingleAsync();
         Assert.Equal(OrderStatus.Scheduled, order.Status);
@@ -164,11 +335,11 @@ public class DeliveryLifecycleTests
     public async Task EnRoute_UsesExpectedTimestampNotScheduledDate_AndRepeatedJobDoesNotOverwriteDelivery()
     {
         await using var fixture = await Fixture.CreateAsync();
-        var id = await fixture.AddOrderAsync(date: new DateTime(2026, 10, 9));
+        var id = await fixture.AddOrderAsync();
         var start = fixture.Time.Now;
         await using (var db = fixture.CreateDb())
         {
-            await fixture.Service(db).SetEnRouteAsync(id, 30m);
+            await fixture.Service(db).SetEnRouteAsync(id, "12:00", 30m);
         }
         fixture.Time.Now = start.AddHours(30).AddTicks(-1);
         await using (var db = fixture.CreateDb())
@@ -272,7 +443,7 @@ public class DeliveryLifecycleTests
         await using var fixture = await Fixture.CreateAsync();
         var id = await fixture.AddOrderAsync(assigned: assigned, scheduled: scheduled);
         await using var db = fixture.CreateDb();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, 1.5m));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service(db).SetEnRouteAsync(id, "12:00", 1.5m));
         Assert.Null((await db.Orders.SingleAsync()).EnRouteAtUtc);
     }
 
@@ -293,7 +464,7 @@ public class DeliveryLifecycleTests
             Quantities = new() { new ProductionDeliveryPlanProductQuantityDto { ProductId = initial.Products.Single().ProductId, Quantity = 10m } }
         });
         var before = await planner.GetCurrentPlanAsync();
-        await fixture.Service(db).SetEnRouteAsync(id, 1.5m);
+        await fixture.Service(db).SetEnRouteAsync(id, "12:00", 1.5m);
         fixture.Time.Now = fixture.Time.Now.AddHours(2);
         Assert.Equal(1, await fixture.Service(db).CompleteDueOrdersAsync());
         var after = await planner.GetCurrentPlanAsync();
@@ -317,14 +488,16 @@ public class DeliveryLifecycleTests
         Assert.Equal(TimeSpan.FromHours(2), clock.BusinessTimeZone.GetUtcOffset(new DateTime(2026, 10, 10)));
     }
 
-    [Fact]
-    public async Task HostedWorker_RunsWithoutDashboardAndCatchesUpFromPersistedDataOnRestart()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HostedWorker_RunsWithoutDashboardAndCatchesUpFromPersistedDataOnRestart(bool afterArrival)
     {
         await using var fixture = await Fixture.CreateAsync();
         var id = await fixture.AddOrderAsync();
         await using (var dispatchDb = fixture.CreateDb())
         {
-            await fixture.Service(dispatchDb).SetEnRouteAsync(id, 1.5m);
+            await fixture.Service(dispatchDb).SetEnRouteAsync(id, "12:30", 1.5m);
         }
         var services = new ServiceCollection();
         services.AddLogging();
@@ -338,22 +511,32 @@ public class DeliveryLifecycleTests
         var worker = Assert.Single(provider.GetServices<IHostedService>());
         await worker.StartAsync(CancellationToken.None);
         await worker.StopAsync(CancellationToken.None);
-        fixture.Time.Now = fixture.Time.Now.AddHours(2);
+        await using (var before = fixture.CreateDb())
+        {
+            Assert.Equal(OrderStatus.Scheduled, (await before.Orders.SingleAsync()).Status);
+        }
+        fixture.Time.Now = fixture.Time.Now.AddMinutes(afterArrival ? 120 : 30);
         using var restarted = new DeliveryLifecycleWorker(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<DeliveryClock>(),
             provider.GetRequiredService<IOptions<DeliveryLifecycleOptions>>(),
             NullLogger<DeliveryLifecycleWorker>.Instance);
         await restarted.StartAsync(CancellationToken.None);
         var deadline = DateTime.UtcNow.AddSeconds(5);
-        bool delivered;
+        var expectedStatus = afterArrival ? OrderStatus.Delivered : OrderStatus.EnRoute;
+        bool transitioned;
         do
         {
             await using var verify = fixture.CreateDb();
-            delivered = await verify.Orders.AnyAsync(x => x.Status == OrderStatus.Delivered);
-            if (!delivered) await Task.Delay(50);
-        } while (!delivered && DateTime.UtcNow < deadline);
+            transitioned = await verify.Orders.AnyAsync(x => x.Status == expectedStatus);
+            if (!transitioned) await Task.Delay(50);
+        } while (!transitioned && DateTime.UtcNow < deadline);
         await restarted.StopAsync(CancellationToken.None);
-        Assert.True(delivered, "The real hosted worker must update the persisted order without a dashboard request.");
+        Assert.True(transitioned, "The real hosted worker must update the persisted order without a dashboard request.");
+        await using var savedDb = fixture.CreateDb();
+        var saved = await savedDb.Orders.SingleAsync();
+        Assert.Equal(new DateTimeOffset(2026, 10, 10, 10, 30, 0, TimeSpan.Zero), saved.EnRouteAtUtc);
+        Assert.Equal(new DateTimeOffset(2026, 10, 10, 12, 0, 0, TimeSpan.Zero), saved.ExpectedDeliveryAtUtc);
+        Assert.Equal(expectedStatus.ToString(), (await savedDb.DeliverySchedules.SingleAsync()).Status);
         Assert.Equal("Africa/Johannesburg", provider.GetRequiredService<DeliveryClock>().BusinessTimeZone.Id);
     }
 
@@ -404,7 +587,7 @@ public class DeliveryLifecycleTests
         }
 
         public DeliveryLifecycleService Service(AppDbContext db) => new(db, Clock, NullLogger<DeliveryLifecycleService>.Instance);
-        public DeliveryService DeliveryService(AppDbContext db) => new(db, new AuditService(db), NullLogger<DeliveryService>.Instance);
+        public DeliveryService DeliveryService(AppDbContext db) => new(db, new AuditService(db), NullLogger<DeliveryService>.Instance, Clock);
 
         public async Task<int> AddOrderAsync(OrderStatus status = OrderStatus.Scheduled,
             bool assigned = true, bool scheduled = true, DateTime? date = null)

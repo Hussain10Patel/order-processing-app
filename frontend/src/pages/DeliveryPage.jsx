@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { isDeliveryLocked } from "../utils/date";
 import DcLabel from "../components/DcLabel";
 import DataTable from "../components/DataTable";
 import MultiDcFilter from "../components/MultiDcFilter";
@@ -358,7 +359,7 @@ function DeliveryPage() {
                   <button
                     type="button"
                     className="secondary table-action-button"
-                    disabled={unschedulingOrderId === row.orderId || ["EnRoute", "Delivered"].includes(row.orderStatus)}
+                    disabled={unschedulingOrderId === row.orderId || isDeliveryLocked(row.orderStatus, row.enRouteAtUtc)}
                     onClick={() => {
                       void handleUnschedule(row);
                     }}

@@ -22,7 +22,7 @@ public class ProductionDeliveryController : ControllerBase
     {
         try
         {
-            return Ok(await lifecycleService.SetEnRouteAsync(orderId, dto.DurationHours, cancellationToken));
+            return Ok(await lifecycleService.SetEnRouteAsync(orderId, dto.DepartureTime, dto.DurationHours, cancellationToken));
         }
         catch (KeyNotFoundException exception)
         {

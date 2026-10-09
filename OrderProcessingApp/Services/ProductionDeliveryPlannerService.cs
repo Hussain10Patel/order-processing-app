@@ -109,7 +109,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         {
             throw new KeyNotFoundException($"Order not found. OrderId={plannerEvent.OrderId.Value}.");
         }
-        DeliveryWorkflowMutations.EnsureNotDispatched(order);
+        DeliveryWorkflowMutations.EnsureNotDispatched(order, _clock?.UtcNow);
 
         var schedule = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == order.Id, cancellationToken);
@@ -128,10 +128,10 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
 
         plannerEvent.PlannedDeliveryDate = normalizedDate;
         plannerEvent.UpdatedAt = Now();
-        order.DeliveryDate = normalizedDate;
+        DeliveryWorkflowMutations.UpdateScheduledDate(order, normalizedDate, _clock?.BusinessTimeZone);
         if (!normalizedDate.HasValue)
         {
-            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
+            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order, _clock?.UtcNow);
         }
         var snapshotOrder = context.EligibleOrders.FirstOrDefault(item => item.OrderId == order.Id);
         if (snapshotOrder is not null)
@@ -570,7 +570,8 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
                 ScheduleStatus = scheduled ? savedOrder?.Status.ToString() ?? "Scheduled" : "Unscheduled",
                 Status = savedOrder?.Status.ToString() ?? string.Empty,
                 CanSchedule = savedOrder is not null && OrderWorkflowStatusRules.IsDeliveryEligible(savedOrder.Status),
-                CanSetEnRoute = savedOrder?.Status == OrderStatus.Scheduled && savedOrder.IsAssignedToProduction && scheduled,
+                CanSetEnRoute = savedOrder?.Status == OrderStatus.Scheduled && savedOrder.IsAssignedToProduction && scheduled
+                    && (!savedOrder.EnRouteAtUtc.HasValue || savedOrder.EnRouteAtUtc.Value > (_clock?.UtcNow ?? DateTimeOffset.UtcNow)),
                 EnRouteAtUtc = savedOrder?.EnRouteAtUtc,
                 ExpectedDeliveryDurationHours = savedOrder?.ExpectedDeliveryDurationHours,
                 ExpectedDeliveryAtUtc = savedOrder?.ExpectedDeliveryAtUtc,

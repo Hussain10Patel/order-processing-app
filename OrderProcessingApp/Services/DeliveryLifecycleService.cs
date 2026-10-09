@@ -18,17 +18,24 @@ public sealed class DeliveryLifecycleService
         _logger = logger;
     }
 
-    public async Task<DeliveryLifecycleDto> SetEnRouteAsync(int orderId, decimal? durationHours, CancellationToken cancellationToken = default)
+    public async Task<DeliveryLifecycleDto> SetEnRouteAsync(int orderId, string? departureTime, decimal? durationHours, CancellationToken cancellationToken = default)
     {
-        DeliveryClock.ExpectedDeliveryTime(_clock.UtcNow, durationHours);
         var order = await _dbContext.Orders.Include(x => x.DeliverySchedules)
             .FirstOrDefaultAsync(x => x.Id == orderId, cancellationToken)
             ?? throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
-
-        // A repeated dispatch request must not restart a saved timer.
-        if (order.Status == OrderStatus.EnRoute)
+        if (!order.DeliveryDate.HasValue)
         {
-            if (order.ExpectedDeliveryDurationHours != durationHours)
+            throw new InvalidOperationException("A saved scheduled delivery date is required before planning departure.");
+        }
+        var departure = _clock.DepartureTime(order.DeliveryDate.Value, departureTime);
+        var expected = DeliveryClock.ExpectedDeliveryTime(departure, durationHours);
+
+        // Saved departure is authoritative even when the worker has not yet promoted the status.
+        if (order.Status == OrderStatus.EnRoute
+            || (order.EnRouteAtUtc.HasValue && order.EnRouteAtUtc.Value <= _clock.UtcNow))
+        {
+            if (order.Status == OrderStatus.Delivered || order.ExpectedDeliveryDurationHours != durationHours
+                || order.EnRouteAtUtc != departure)
             {
                 throw new InvalidOperationException("This order is already En Route. Its saved delivery timer cannot be changed.");
             }
@@ -41,18 +48,14 @@ public sealed class DeliveryLifecycleService
             throw new InvalidOperationException("Only assigned, Scheduled orders with a delivery schedule can be set to En Route.");
         }
 
-        var now = _clock.UtcNow;
-        var expected = DeliveryClock.ExpectedDeliveryTime(now, durationHours);
-        order.Status = OrderStatus.EnRoute;
-        order.EnRouteAtUtc = now;
+        var previousDeparture = order.EnRouteAtUtc;
+        order.EnRouteAtUtc = departure;
         order.ExpectedDeliveryDurationHours = durationHours;
         order.ExpectedDeliveryAtUtc = expected;
         order.IsDeliveryEstimated = false;
-        foreach (var schedule in order.DeliverySchedules)
-        {
-            schedule.Status = OrderStatus.EnRoute.ToString();
-        }
-        TrackStatusChange(order.Id, OrderStatus.Scheduled, OrderStatus.EnRoute, now);
+        new AuditService(_dbContext).TrackChange("Order", order.Id, "DepartureAtUtc",
+            previousDeparture?.ToString("O"), departure.ToString("O"));
+        _dbContext.Entry(order).Property(x => x.Status).IsModified = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Map(order);
     }
@@ -75,35 +78,46 @@ public sealed class DeliveryLifecycleService
             {
                 continue;
             }
-            if ((order.Status == OrderStatus.Scheduled && (!order.DeliveryDate.HasValue || order.EnRouteAtUtc.HasValue))
+            if (order.EnRouteAtUtc.HasValue != order.ExpectedDeliveryAtUtc.HasValue
+                || (order.EnRouteAtUtc.HasValue && order.ExpectedDeliveryAtUtc <= order.EnRouteAtUtc)
+                || (order.Status == OrderStatus.Scheduled && !order.DeliveryDate.HasValue)
                 || (order.Status == OrderStatus.EnRoute && (!order.EnRouteAtUtc.HasValue || !order.ExpectedDeliveryAtUtc.HasValue)))
             {
                 _logger.LogWarning("Delivery transition skipped for order {OrderId}: persisted delivery date/timing is inconsistent with status {Status}.", id, order.Status);
                 continue;
             }
 
+            var departed = order.Status == OrderStatus.Scheduled && order.EnRouteAtUtc.HasValue
+                && order.EnRouteAtUtc.Value <= now;
+            if (departed)
+            {
+                order.Status = OrderStatus.EnRoute;
+                foreach (var schedule in order.DeliverySchedules) schedule.Status = OrderStatus.EnRoute.ToString();
+                TrackStatusChange(id, OrderStatus.Scheduled, OrderStatus.EnRoute, now);
+            }
+
             var isDue = order.Status == OrderStatus.Scheduled
                 ? order.EnRouteAtUtc is null && order.DeliveryDate.HasValue && order.DeliveryDate.Value.Date < today
                 : order.Status == OrderStatus.EnRoute && order.EnRouteAtUtc.HasValue
                     && order.ExpectedDeliveryAtUtc.HasValue && order.ExpectedDeliveryAtUtc.Value <= now;
-            if (!isDue)
+            if (!isDue && !departed)
             {
                 continue;
             }
 
-            var oldStatus = order.Status;
-            order.Status = OrderStatus.Delivered;
-            order.DeliveredAtUtc = now;
-            order.IsDeliveryEstimated = true;
-            foreach (var schedule in order.DeliverySchedules)
+            if (isDue)
             {
-                schedule.Status = OrderStatus.Delivered.ToString();
+                var oldStatus = order.Status;
+                order.Status = OrderStatus.Delivered;
+                order.DeliveredAtUtc = now;
+                order.IsDeliveryEstimated = true;
+                foreach (var schedule in order.DeliverySchedules) schedule.Status = OrderStatus.Delivered.ToString();
+                TrackStatusChange(id, oldStatus, OrderStatus.Delivered, now);
             }
-            TrackStatusChange(id, oldStatus, OrderStatus.Delivered, now);
             try
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                completed++;
+                if (isDue) completed++;
             }
             catch (DbUpdateConcurrencyException exception)
             {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getDistributionCentres, getProductionAssignmentOrders, setOrderDeliveryDate, unassignProductionOrder } from "../services/api";
 import StatusLabel from "../components/StatusLabel";
+import { isDeliveryLocked } from "../utils/date";
 
 function formatDate(value) {
   if (!value) return "-";
@@ -108,7 +109,7 @@ function ProductionPage() {
         const latestById = new Map(response.map((order) => [order.id, order]));
         setOrders((previous) => previous.map((order) => {
           const latest = latestById.get(order.id);
-          return latest ? { ...order, deliveryDate: latest.deliveryDate, status: latest.status, isScheduled: latest.isScheduled, isAssignedToProduction: latest.isAssignedToProduction } : order;
+          return latest ? { ...order, enRouteAtUtc: latest.enRouteAtUtc, deliveryDate: latest.deliveryDate, status: latest.status, isScheduled: latest.isScheduled, isAssignedToProduction: latest.isAssignedToProduction } : order;
         }));
       } catch (requestError) {
         if (current) setError(requestError.message || "Unable to refresh order statuses");
@@ -300,7 +301,7 @@ function ProductionPage() {
                           <button
                             type="button"
                             className="secondary"
-                            disabled={Boolean(savingOrderIds[order.id]) || ["EnRoute", "Delivered"].includes(order.status)}
+                            disabled={Boolean(savingOrderIds[order.id]) || isDeliveryLocked(order.status, order.enRouteAtUtc)}
                             onClick={() => void unassignOrder(order)}
                           >
                             Unassign

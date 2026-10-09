@@ -58,3 +58,19 @@ export function formatBusinessDateTime(value, timeZone = "Africa/Johannesburg") 
     timeStyle: "short",
   }).format(date);
 }
+
+export function isDeliveryLocked(status, departureAtUtc) {
+  return ["EnRoute", "Delivered"].includes(status)
+    || (status === "Scheduled" && departureAtUtc && parseUtcDate(departureAtUtc).getTime() <= Date.now());
+}
+
+export function businessTimeInput(value, timeZone = "Africa/Johannesburg") {
+  const date = parseUtcDate(value);
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}

@@ -24,6 +24,7 @@ public class DeliveryScheduleDto
     public string DeliveryDate { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string OrderStatus { get; set; } = string.Empty;
+    public DateTimeOffset? EnRouteAtUtc { get; set; }
     public bool IsOrderProcessed { get; set; }
     public string? Notes { get; set; }
     public decimal TotalPallets { get; set; }

@@ -8,12 +8,24 @@
   atomically saves the date, assignment flag, Scheduled status and one delivery
   schedule. Existing assigned Approved orders can confirm their date to enter
   this lifecycle.
-- Production / Delivery owns dispatch: Set En Route requires positive hours
-  (including decimals). The backend saves UTC start and expected timestamps once.
-  Repeating the same dispatch request does not restart the timer.
+- Production / Delivery owns departure planning: Set En Route asks only for a
+  departure time (HH:mm, Johannesburg time) and positive duration hours, including
+  decimals. It uses the existing saved scheduled date, never asks for the date
+  again, and never uses an unsaved planner date draft. The backend combines that
+  date and local time and persists UTC departure and expected timestamps.
+  `EnRouteAtUtc` now represents the saved departure, including future departures;
+  the persisted status remains Scheduled until the worker reaches departure.
+  Existing En Route timestamps retain their meaning. Repeating the same request
+  does not restart the timer. Pending departures can be edited before departure.
+  The request contract is `{ "departureTime": "10:30", "durationHours": 2.5 }`;
+  the server derives the date from the order, not from request data.
 - Unassign or Unschedule returns Scheduled orders to Approved, clears the
   assignment and schedule, and preserves both dates and production data. These
-  operations and scheduled-date edits are blocked after En Route or Delivered.
+  operations and scheduled-date edits are blocked at the saved departure time,
+  even before the next worker check, and after En Route or Delivered. Cancelling
+  before departure clears the pending departure/duration/expected timestamps.
+  Changing the scheduled date before departure retains the same Johannesburg
+  departure time and duration, recalculating the UTC timestamps on the new date.
   Unassign/unschedule before adjusting or deleting a Scheduled order.
 - Reports use persisted order statuses, not inferred production quantities or
   schedule existence. Date/range queries use the saved schedule date, each order
@@ -39,6 +51,11 @@ cannot safely be treated as the original imported date. This migration does not
 invent original dates or rewrite historical statuses. Review legacy assignments
 and confirm their dates through Production.
 
+The departure-time update reuses the existing lifecycle fields and requires no
+additional migration. Deploy backend and frontend together because the dispatch
+request now requires `departureTime`; older clients sending only hours will
+receive a validation error rather than starting delivery immediately.
+
 [Backend configuration](../OrderProcessingApp/appsettings.json):
 
 ```json
@@ -50,13 +67,25 @@ and confirm their dates through Production.
 
 The registered `DeliveryLifecycleWorker` checks on startup and every 60 seconds:
 
-- Assigned Scheduled orders with a delivery schedule, no saved En Route start,
+- Assigned Scheduled orders with a saved departure remain Scheduled before it,
+  become En Route at/after departure, and become Delivered (estimated) at/after
+  the saved expected timestamp. A startup check after both thresholds catches up
+  through both transitions in one atomic save. Long deliveries are not completed
+  merely because the scheduled day has ended.
+- Assigned Scheduled orders with a delivery schedule, no saved departure,
   and a scheduled date before today's Johannesburg calendar date become
   Delivered (estimated). They cannot be completed during their scheduled day.
 - Assigned En Route orders with a delivery schedule become Delivered (estimated)
   when their saved UTC expected timestamp is reached.
 - Status/date/assignment concurrency checks prevent stale transitions from
   overwriting a competing change. Database failures are logged and retried.
+
+For a saved 16 October date, 10:30 departure and 2.5 hours, the persisted UTC
+departure is 08:30 and expected arrival is 11:00 (13:00 Johannesburg). Eligibility
+changes exactly at those timestamps; persistence occurs on the first worker
+check at/after the boundary, normally within the 60-second interval. This is not
+a second-precision scheduler. Browser refreshes display persisted statuses only
+and never perform delivery transitions.
 
 **The backend must remain running.** A sleeping/free Render web service cannot
 run a hosted worker while suspended. Use an always-on hosting plan or a dedicated
@@ -84,7 +113,8 @@ npm run build
 
 Lifecycle tests use an isolated SQLite relational database (including assignment
 rollback, concurrency, day boundaries, decimal durations, timer persistence,
-report counts and the real hosted worker). Existing tests also cover CSV import,
+exact departure/arrival boundaries, cancellation/rebasing, report counts and the
+real hosted worker restarting before/after arrival). Existing tests also cover CSV import,
 planner stock and production/delivery regressions. Browser checks must mock
 write APIs or use a local test backend; do not dispatch test orders on the hosted
 production API.

@@ -9,11 +9,13 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
 {
     private readonly AppDbContext _dbContext;
     private readonly IAuditService _auditService;
+    private readonly DeliveryClock? _clock;
 
-    public ProductionAssignmentService(AppDbContext dbContext, IAuditService? auditService = null)
+    public ProductionAssignmentService(AppDbContext dbContext, IAuditService? auditService = null, DeliveryClock? clock = null)
     {
         _dbContext = dbContext;
         _auditService = auditService ?? new AuditService(dbContext);
+        _clock = clock;
     }
 
     public async Task<List<ProductionAssignmentOrderDto>> GetApprovedOrdersAsync(
@@ -103,7 +105,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
             return null;
         }
 
-        DeliveryWorkflowMutations.EnsureNotDispatched(order);
+        DeliveryWorkflowMutations.EnsureNotDispatched(order, _clock?.UtcNow);
         if (order.Status is not (OrderStatus.Approved or OrderStatus.Scheduled))
         {
             throw new InvalidOperationException("Only approved orders can be assigned to production.");
@@ -135,7 +137,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
 
         if (order.DeliveryDate != normalizedDate || !order.IsAssignedToProduction)
         {
-            order.DeliveryDate = normalizedDate;
+            DeliveryWorkflowMutations.UpdateScheduledDate(order, normalizedDate, _clock?.BusinessTimeZone);
             order.IsAssignedToProduction = true;
 
             if (scheduledOrder is not null)
@@ -180,7 +182,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
             return null;
         }
 
-        DeliveryWorkflowMutations.EnsureNotDispatched(order);
+        DeliveryWorkflowMutations.EnsureNotDispatched(order, _clock?.UtcNow);
         if (order.Status is not (OrderStatus.Approved or OrderStatus.Scheduled))
         {
             throw new InvalidOperationException("Only approved orders can be unassigned from production.");
@@ -188,7 +190,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
 
         var originalStatus = order.Status;
         var originalAssignment = order.IsAssignedToProduction;
-        DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
+        DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order, _clock?.UtcNow);
         if (originalStatus != order.Status) _auditService.TrackChange("Order", order.Id, "Status", originalStatus.ToString(), order.Status.ToString());
         if (originalAssignment) _auditService.TrackChange("Order", order.Id, "ProductionAssignment", "Assigned", "Unassigned");
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -207,6 +209,7 @@ public sealed class ProductionAssignmentService : IProductionAssignmentService
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
             DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
             OriginalCsvDeliveryDate = order.OriginalCsvDeliveryDate?.ToString("yyyy-MM-dd"),
+            EnRouteAtUtc = order.EnRouteAtUtc,
             Status = order.Status.ToString(),
             IsScheduled = order.DeliverySchedules.Count > 0,
             IsAssignedToProduction = order.IsAssignedToProduction

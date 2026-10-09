@@ -389,7 +389,7 @@ function ReportsPage() {
                   },
                   { key: "deliveryDate", header: "Scheduled Delivery Date", render: (row) => formatDate(row.deliveryDate) },
                   { key: "originalCsvDeliveryDate", header: "Original CSV Delivery Date", render: (row) => formatDate(row.originalCsvDeliveryDate) },
-                  { key: "enRouteAtUtc", header: "En Route Since", render: (row) => formatBusinessDateTime(row.enRouteAtUtc, report.businessTimeZone) },
+                  { key: "enRouteAtUtc", header: "Departure (Scheduled Date)", render: (row) => formatBusinessDateTime(row.enRouteAtUtc, report.businessTimeZone) },
                   { key: "expectedDeliveryDurationHours", header: "Expected Hours", render: (row) => row.expectedDeliveryDurationHours ?? "-" },
                   { key: "expectedDeliveryAtUtc", header: "Expected Delivery", render: (row) => formatBusinessDateTime(row.expectedDeliveryAtUtc, report.businessTimeZone) },
                   {
