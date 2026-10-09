@@ -48,3 +48,13 @@ export function formatDate(value) {
   // en-CA locale formats as YYYY-MM-DD using local timezone
   return date.toLocaleDateString("en-CA");
 }
+
+export function formatBusinessDateTime(value, timeZone = "Africa/Johannesburg") {
+  const date = parseUtcDate(value);
+  if (!date || Number.isNaN(date.getTime())) return "-";
+  return new Intl.DateTimeFormat("en-ZA", {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}

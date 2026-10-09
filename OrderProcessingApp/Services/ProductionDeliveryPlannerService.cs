@@ -11,11 +11,13 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
 
     private readonly AppDbContext _dbContext;
     private readonly IProductionService _productionService;
+    private readonly DeliveryClock? _clock;
 
-    public ProductionDeliveryPlannerService(AppDbContext dbContext, IProductionService productionService)
+    public ProductionDeliveryPlannerService(AppDbContext dbContext, IProductionService productionService, DeliveryClock? clock = null)
     {
         _dbContext = dbContext;
         _productionService = productionService;
+        _clock = clock;
     }
 
     public async Task<ProductionDeliveryPlanDto> GetCurrentPlanAsync(CancellationToken cancellationToken = default)
@@ -107,6 +109,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         {
             throw new KeyNotFoundException($"Order not found. OrderId={plannerEvent.OrderId.Value}.");
         }
+        DeliveryWorkflowMutations.EnsureNotDispatched(order);
 
         var schedule = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == order.Id, cancellationToken);
@@ -128,7 +131,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         order.DeliveryDate = normalizedDate;
         if (!normalizedDate.HasValue)
         {
-            order.IsAssignedToProduction = false;
+            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
         }
         var snapshotOrder = context.EligibleOrders.FirstOrDefault(item => item.OrderId == order.Id);
         if (snapshotOrder is not null)
@@ -266,14 +269,14 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
             .ToList();
 
         var products = BuildProductCatalog(eligibleOrders);
-        var orderDatesByOrderId = await _dbContext.Orders
+        var ordersById = await _dbContext.Orders
             .AsNoTracking()
             .Where(x => eligibleOrders.Select(order => order.OrderId).Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.OrderDate, cancellationToken);
+            .ToDictionaryAsync(x => x.Id, cancellationToken);
         var schedulesByOrderId = await LoadSchedulesByOrderIdAsync(eligibleOrders.Select(x => x.OrderId).ToList(), cancellationToken);
         var plan = await GetOrCreatePlanAsync(cancellationToken);
 
-        return new PlannerContext(plan, eligibleOrders, products, orderDatesByOrderId, schedulesByOrderId);
+        return new PlannerContext(plan, eligibleOrders, products, ordersById, schedulesByOrderId);
     }
 
     private async Task<ProductionDeliveryPlanDto> AddEventAsync(int afterEventId, ProductionDeliveryPlanEventType eventType, CancellationToken cancellationToken)
@@ -549,6 +552,8 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
                 : null;
 
             var scheduled = plannerEvent.OrderId.HasValue && context.SchedulesByOrderId.ContainsKey(plannerEvent.OrderId.Value);
+            var savedOrder = plannerEvent.OrderId.HasValue && context.OrdersById.TryGetValue(plannerEvent.OrderId.Value, out var persistedOrder)
+                ? persistedOrder : null;
 
             eventDtos.Add(new ProductionDeliveryPlanEventDto
             {
@@ -559,13 +564,18 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
                 OrderNumber = currentOrder?.OrderNumber,
                 DistributionCentreId = currentOrder?.DistributionCentreId,
                 DistributionCentreName = currentOrder?.DistributionCentre,
-                OrderDate = currentOrder is null || !context.OrderDatesByOrderId.TryGetValue(currentOrder.OrderId, out var orderDate)
-                    ? null
-                    : orderDate.ToString("yyyy-MM-dd"),
+                OrderDate = savedOrder?.OrderDate.ToString("yyyy-MM-dd"),
                 PlannedDeliveryDate = ResolveDisplayDeliveryDate(plannerEvent, currentOrder, scheduled),
                 IsScheduled = scheduled,
-                ScheduleStatus = scheduled ? "Scheduled" : "Unscheduled",
-                CanSchedule = plannerEvent.EventType == ProductionDeliveryPlanEventType.Order,
+                ScheduleStatus = scheduled ? savedOrder?.Status.ToString() ?? "Scheduled" : "Unscheduled",
+                Status = savedOrder?.Status.ToString() ?? string.Empty,
+                CanSchedule = savedOrder is not null && OrderWorkflowStatusRules.IsDeliveryEligible(savedOrder.Status),
+                CanSetEnRoute = savedOrder?.Status == OrderStatus.Scheduled && savedOrder.IsAssignedToProduction && scheduled,
+                EnRouteAtUtc = savedOrder?.EnRouteAtUtc,
+                ExpectedDeliveryDurationHours = savedOrder?.ExpectedDeliveryDurationHours,
+                ExpectedDeliveryAtUtc = savedOrder?.ExpectedDeliveryAtUtc,
+                DeliveredAtUtc = savedOrder?.DeliveredAtUtc,
+                IsDeliveryEstimated = savedOrder?.IsDeliveryEstimated ?? false,
                 ProductQuantities = quantities
                     .OrderBy(x => x.ProductId)
                     .Select(x => new ProductionDeliveryPlanProductQuantityDto
@@ -583,6 +593,7 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
 
         return new ProductionDeliveryPlanDto
         {
+            BusinessTimeZone = _clock?.BusinessTimeZone.Id ?? "Africa/Johannesburg",
             Id = plan.Id,
             Name = plan.Name,
             CreatedAt = plan.CreatedAt,
@@ -765,6 +776,6 @@ public sealed class ProductionDeliveryPlannerService : IProductionDeliveryPlanne
         ProductionDeliveryPlan Plan,
         IReadOnlyList<ProductionOrderDto> EligibleOrders,
         IReadOnlyList<ProductionDeliveryPlanProductDto> Products,
-        IReadOnlyDictionary<int, DateTime> OrderDatesByOrderId,
+        IReadOnlyDictionary<int, Order> OrdersById,
         IReadOnlyDictionary<int, DeliverySchedule> SchedulesByOrderId);
 }

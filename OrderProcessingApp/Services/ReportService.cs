@@ -8,10 +8,12 @@ namespace OrderProcessingApp.Services;
 public class ReportService : IReportService
 {
     private readonly AppDbContext _dbContext;
+    private readonly DeliveryClock? _clock;
 
-    public ReportService(AppDbContext dbContext)
+    public ReportService(AppDbContext dbContext, DeliveryClock? clock = null)
     {
         _dbContext = dbContext;
+        _clock = clock;
     }
 
     public async Task<List<ReportAvailableDateDto>> GetAvailableReportDatesAsync(CancellationToken cancellationToken = default)
@@ -31,7 +33,7 @@ public class ReportService : IReportService
 
         var pastelDates = await _dbContext.Orders
             .AsNoTracking()
-            .Where(x => x.Status == OrderStatus.Approved || x.Status == OrderStatus.Processed)
+            .Where(x => OrderWorkflowStatusRules.InvoiceExportStatuses.Contains(x.Status))
             .Where(x => x.DeliveryDate.HasValue)
             .Select(x => x.DeliveryDate!.Value.Date)
             .Distinct()
@@ -88,29 +90,10 @@ public class ReportService : IReportService
             .Where(x => x.DeliveryDate >= start && x.DeliveryDate < end)
             .ToListAsync(cancellationToken);
 
-        var orderIds = orders.Select(x => x.Id).ToList();
-        var schedulesByOrder = (await _dbContext.DeliverySchedules
-            .AsNoTracking()
-            .Where(x => orderIds.Contains(x.OrderId) && x.DeliveryDate >= start && x.DeliveryDate < end)
-            .ToListAsync(cancellationToken))
-            .GroupBy(x => x.OrderId)
-            .ToDictionary(x => x.Key, x => x.Select(ds => ds.Status).ToList());
-
-        var planQtyByProduct = await _dbContext.ProductionPlans
-            .AsNoTracking()
-            .Where(x => x.Date >= start && x.Date < end)
-            .GroupBy(x => x.ProductId)
-            .Select(g => new
-            {
-                ProductId = g.Key,
-                Quantity = g.Sum(x => x.ProductionQuantity)
-            })
-            .ToDictionaryAsync(x => x.ProductId, x => x.Quantity, cancellationToken);
-
         var orderComputedStatuses = orders.Select(order => new
         {
             Order = order,
-            Status = ComputeReportStatus(order, schedulesByOrder, planQtyByProduct),
+            Status = order.Status.ToString(),
             TotalValue = order.Items.Sum(i => i.Quantity * i.Price)
         }).ToList();
 
@@ -118,15 +101,15 @@ public class ReportService : IReportService
 
         return new ReportSummaryDto
         {
+            BusinessTimeZone = _clock?.BusinessTimeZone.Id ?? "Africa/Johannesburg",
             TotalOrders = orders.Count,
             TotalValue = allItems.Sum(i => i.Quantity * i.Price),
-            OrdersByStatus = orderComputedStatuses
-                .GroupBy(x => x.Status)
-                .Select(g => new ReportStatusCountDto
+            OrdersByStatus = Enum.GetValues<OrderStatus>()
+                .Select(status => new ReportStatusCountDto
                 {
-                    Status = g.Key,
-                    Count = g.Count(),
-                    TotalValue = g.Sum(x => x.TotalValue)
+                    Status = status.ToString(),
+                    Count = orderComputedStatuses.Count(x => x.Order.Status == status),
+                    TotalValue = orderComputedStatuses.Where(x => x.Order.Status == status).Sum(x => x.TotalValue)
                 })
                 .OrderBy(x => x.Status)
                 .ToList(),
@@ -149,14 +132,31 @@ public class ReportService : IReportService
             DeliverySummary = orderComputedStatuses
                 .Select(x => new ReportDeliverySummaryDto
                 {
+                    Id = x.Order.Id,
                     PoNumber = x.Order.OrderNumber,
+                    Supplier = ResolveSupplier(x.Order),
                     Dc = x.Order.DistributionCentre?.Name ?? string.Empty,
                     DeliveryDate = x.Order.DeliveryDate!.Value.ToString("yyyy-MM-dd"),
-                    Status = x.Status
+                    Status = x.Status,
+                    OriginalCsvDeliveryDate = x.Order.OriginalCsvDeliveryDate?.ToString("yyyy-MM-dd"),
+                    EnRouteAtUtc = x.Order.EnRouteAtUtc,
+                    ExpectedDeliveryDurationHours = x.Order.ExpectedDeliveryDurationHours,
+                    ExpectedDeliveryAtUtc = x.Order.ExpectedDeliveryAtUtc,
+                    DeliveredAtUtc = x.Order.DeliveredAtUtc,
+                    IsDeliveryEstimated = x.Order.IsDeliveryEstimated
                 })
                 .OrderBy(x => x.Dc)
                 .ThenBy(x => x.PoNumber)
-                .ToList()
+                .ToList(),
+            DeliveryBreakdown = orders
+                .GroupBy(order => new { Supplier = ResolveSupplier(order), Dc = order.DistributionCentre?.Name ?? string.Empty, order.Status })
+                .Select(group => new ReportDeliveryBreakdownDto
+                {
+                    Supplier = group.Key.Supplier,
+                    Dc = group.Key.Dc,
+                    Status = group.Key.Status.ToString(),
+                    Count = group.Count()
+                }).OrderBy(row => row.Supplier).ThenBy(row => row.Dc).ThenBy(row => row.Status).ToList()
         };
     }
 
@@ -584,42 +584,12 @@ public class ReportService : IReportService
         return exceptions;
     }
 
-    private static string ComputeReportStatus(
-        Order order,
-        IReadOnlyDictionary<int, List<string>> schedulesByOrder,
-        IReadOnlyDictionary<int, decimal> planQtyByProduct)
+    private static string ResolveSupplier(Order order)
     {
-        var hasDeliverySchedule = schedulesByOrder.ContainsKey(order.Id);
-        if (order.Status == OrderStatus.Scheduled || hasDeliverySchedule)
-        {
-            return "Scheduled";
-        }
-
-        var requiredByProduct = order.Items
-            .GroupBy(i => i.ProductId)
-            .ToDictionary(g => g.Key, g => g.Sum(i => i.Quantity));
-
-        var hasProduction = requiredByProduct.Any(kvp =>
-            planQtyByProduct.TryGetValue(kvp.Key, out var plannedQty) && plannedQty > 0);
-
-        var isProductionComplete = requiredByProduct.Count > 0 && requiredByProduct.All(kvp =>
-            planQtyByProduct.TryGetValue(kvp.Key, out var plannedQty) && plannedQty >= kvp.Value);
-
-        if (order.Status == OrderStatus.Processed || isProductionComplete)
-        {
-            return "Processed";
-        }
-
-        if (order.Status == OrderStatus.InProduction || hasProduction)
-        {
-            return "InProduction";
-        }
-
-        if (order.Status == OrderStatus.Approved)
-        {
-            return "Approved";
-        }
-
-        return "Pending";
+        return string.Join(", ", order.Items.Select(item =>
+            item.Metadata.FirstOrDefault(entry => entry.Key.Equals("Supplier", StringComparison.OrdinalIgnoreCase)
+                || entry.Key.Equals("SupplierName", StringComparison.OrdinalIgnoreCase)
+                || entry.Key.Equals("Vendor", StringComparison.OrdinalIgnoreCase)).Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value)).Distinct().OrderBy(value => value));
     }
 }

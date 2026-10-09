@@ -40,6 +40,7 @@ public class DeliveryService : IDeliveryService
         {
             throw new InvalidOperationException($"Delivery scheduling is only allowed for {OrderWorkflowStatusRules.DeliveryEligibleStatusLabel} orders. Current status: {order.Status}.");
         }
+        DeliveryWorkflowMutations.EnsureNotDispatched(order);
 
         if (normalized < order.OrderDate.Date)
         {
@@ -131,7 +132,9 @@ public class DeliveryService : IDeliveryService
         Console.WriteLine($"[SCHEDULE] Saved date: {existing!.DeliveryDate:O}");
         Console.WriteLine($"[SCHEDULE] Kind: {existing!.DeliveryDate.Kind}");
         Console.WriteLine($"[ScheduleDeliveryAsync] Persisting DeliverySchedule.DeliveryDate={existing.DeliveryDate:yyyy-MM-dd} and Order.DeliveryDate={order.DeliveryDate?.ToString("yyyy-MM-dd") ?? "(none)"} for OrderId={orderId}");
-        Console.WriteLine($"[DELIVERY] Order status unchanged after scheduling. OrderId={order.Id}, Status={order.Status}");
+        _auditService.TrackChange("Order", order.Id, "Status", order.Status.ToString(), OrderStatus.Scheduled.ToString());
+        order.Status = OrderStatus.Scheduled;
+        _dbContext.Entry(order).Property(x => x.Status).IsModified = true;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -154,25 +157,28 @@ public class DeliveryService : IDeliveryService
 
     public async Task<bool> UnscheduleDeliveryAsync(int orderId, CancellationToken cancellationToken = default)
     {
-        var orderExists = await _dbContext.Orders
-            .AsNoTracking()
-            .AnyAsync(x => x.Id == orderId, cancellationToken);
+        var order = await _dbContext.Orders
+            .Include(x => x.DeliverySchedules)
+            .FirstOrDefaultAsync(x => x.Id == orderId, cancellationToken);
 
-        if (!orderExists)
+        if (order is null)
         {
             throw new KeyNotFoundException($"Order not found. OrderId={orderId}.");
         }
+        DeliveryWorkflowMutations.EnsureNotDispatched(order);
 
         var existing = await _dbContext.DeliverySchedules
             .FirstOrDefaultAsync(x => x.OrderId == orderId, cancellationToken);
 
         if (existing is null)
         {
+            DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
+            await _dbContext.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("[DELIVERY UNSCHEDULE] OrderId={OrderId} already unscheduled.", orderId);
             return false;
         }
 
-        _dbContext.DeliverySchedules.Remove(existing);
+        DeliveryWorkflowMutations.ClearAssignmentAndSchedule(_dbContext, order);
 
         _auditService.TrackChange(
             "Delivery",

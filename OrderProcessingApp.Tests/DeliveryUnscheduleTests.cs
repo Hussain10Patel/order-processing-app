@@ -107,7 +107,7 @@ public class DeliveryUnscheduleTests
 
         Assert.Equal(seeded.OrderId, scheduled.OrderId);
         Assert.Equal("Scheduled", scheduled.Status);
-        Assert.Equal("Processed", scheduled.OrderStatus);
+        Assert.Equal("Scheduled", scheduled.OrderStatus);
 
         await using var db = fixture.CreateDbContext();
         var schedule = await db.DeliverySchedules.FirstOrDefaultAsync(x => x.OrderId == seeded.OrderId);

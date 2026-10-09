@@ -11,6 +11,7 @@ public sealed class ProductionAssignmentOrderDto
     public string DistributionCentreName { get; set; } = string.Empty;
     public string OrderDate { get; set; } = string.Empty;
     public string? DeliveryDate { get; set; }
+    public string? OriginalCsvDeliveryDate { get; set; }
     public string Status { get; set; } = string.Empty;
     public bool IsScheduled { get; set; }
     public bool IsAssignedToProduction { get; set; }

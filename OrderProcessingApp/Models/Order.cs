@@ -6,6 +6,12 @@ public class Order
     public string OrderNumber { get; set; } = string.Empty;
     public DateTime OrderDate { get; set; }
     public DateTime? DeliveryDate { get; set; }
+    public DateTime? OriginalCsvDeliveryDate { get; set; }
+    public DateTimeOffset? EnRouteAtUtc { get; set; }
+    public decimal? ExpectedDeliveryDurationHours { get; set; }
+    public DateTimeOffset? ExpectedDeliveryAtUtc { get; set; }
+    public DateTimeOffset? DeliveredAtUtc { get; set; }
+    public bool IsDeliveryEstimated { get; set; }
     public int DistributionCentreId { get; set; }
     public OrderSource Source { get; set; }
     public OrderStatus Status { get; set; } = OrderStatus.Pending;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getDistributionCentres, getProductionAssignmentOrders, setOrderDeliveryDate, unassignProductionOrder } from "../services/api";
+import StatusLabel from "../components/StatusLabel";
 
 function formatDate(value) {
   if (!value) return "-";
@@ -70,7 +71,7 @@ function ProductionPage() {
           setOrders(nextOrders);
           setDeliveryDateDrafts(Object.fromEntries(nextOrders.map((order) => [
             order.id,
-            order.isAssignedToProduction ? order.deliveryDate || "" : "",
+            order.deliveryDate || order.originalCsvDeliveryDate || "",
           ])));
         }
       })
@@ -93,6 +94,34 @@ function ProductionPage() {
       ? current.filter((selectedId) => selectedId !== numericId)
       : [...current, numericId]);
   }
+
+  useEffect(() => {
+    let current = true;
+    async function refreshStatuses() {
+      try {
+        const response = await getProductionAssignmentOrders({
+          assignment,
+          distributionCentreIds: selectedIdsKey ? selectedIdsKey.split(",") : [],
+          orderNumber, orderDateFrom, orderDateTo, deliveryDateFrom, deliveryDateTo,
+        });
+        if (!current) return;
+        const latestById = new Map(response.map((order) => [order.id, order]));
+        setOrders((previous) => previous.map((order) => {
+          const latest = latestById.get(order.id);
+          return latest ? { ...order, deliveryDate: latest.deliveryDate, status: latest.status, isScheduled: latest.isScheduled, isAssignedToProduction: latest.isAssignedToProduction } : order;
+        }));
+      } catch (requestError) {
+        if (current) setError(requestError.message || "Unable to refresh order statuses");
+      }
+    }
+    const interval = setInterval(refreshStatuses, 60000);
+    window.addEventListener("focus", refreshStatuses);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refreshStatuses);
+    };
+  }, [assignment, selectedIdsKey, orderNumber, orderDateFrom, orderDateTo, deliveryDateFrom, deliveryDateTo]);
 
   function clearFilters() {
     setAssignment("all");
@@ -139,7 +168,7 @@ function ProductionPage() {
     <section>
       <header className="page-header">
         <h2>Production</h2>
-        <p>Assign approved orders to production by explicitly selecting a Production Assignment Date.</p>
+        <p>Confirm the scheduled delivery date before assigning an approved order. Assignment automatically sets the order to Scheduled.</p>
       </header>
 
       <div className="panel production-filters-panel" style={{ marginBottom: 16 }}>
@@ -229,6 +258,8 @@ function ProductionPage() {
                   <th>Distribution Centre</th>
                   <th>Order Date</th>
                   <th>Delivery Date</th>
+                  <th>Original CSV Delivery Date</th>
+                  <th>Status</th>
                   <th>Assignment / Delivery Date</th>
                 </tr>
               </thead>
@@ -239,16 +270,19 @@ function ProductionPage() {
                     <td>{order.distributionCentreName}</td>
                     <td>{formatDate(order.orderDate)}</td>
                     <td>{formatDate(order.deliveryDate)}</td>
+                    <td>{formatDate(order.originalCsvDeliveryDate)}</td>
+                    <td><StatusLabel status={order.status} /></td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span className={order.isAssignedToProduction ? "badge green" : "badge orange"}>
                           {order.isAssignedToProduction ? "Assigned" : "Not Assigned"}
                         </span>
-                        {!order.isAssignedToProduction && (
+                        {(!order.isAssignedToProduction || order.status === "Approved") && (
                           <>
                             <input
                               type="date"
-                              aria-label={`Production Assignment Date for ${order.orderNumber}`}
+                              aria-label={`Scheduled Delivery Date for ${order.orderNumber}`}
+                              min={order.orderDate}
                               value={deliveryDateDrafts[order.id] || ""}
                               onChange={(event) => setDeliveryDateDrafts((current) => ({ ...current, [order.id]: event.target.value }))}
                             />
@@ -258,7 +292,7 @@ function ProductionPage() {
                               disabled={Boolean(savingOrderIds[order.id]) || !deliveryDateDrafts[order.id]}
                               onClick={() => void saveDeliveryDate(order, deliveryDateDrafts[order.id])}
                             >
-                              {savingOrderIds[order.id] ? "Saving..." : "Assign Date"}
+                              {savingOrderIds[order.id] ? "Saving..." : "Confirm & Assign"}
                             </button>
                           </>
                         )}
@@ -266,7 +300,7 @@ function ProductionPage() {
                           <button
                             type="button"
                             className="secondary"
-                            disabled={Boolean(savingOrderIds[order.id])}
+                            disabled={Boolean(savingOrderIds[order.id]) || ["EnRoute", "Delivered"].includes(order.status)}
                             onClick={() => void unassignOrder(order)}
                           >
                             Unassign

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Services;
 
@@ -27,6 +28,10 @@ public class DeliveryController : ControllerBase
         {
             var result = await _deliveryService.ScheduleDeliveryAsync(dto.OrderId, dto.DeliveryDate, dto.Notes, cancellationToken);
             return Ok(result);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
         }
         catch (KeyNotFoundException ex)
         {
@@ -66,6 +71,14 @@ public class DeliveryController : ControllerBase
         catch (KeyNotFoundException ex)
         {
             return NotFound(new { message = ex.Message, orderId });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message, orderId });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
         }
     }
 

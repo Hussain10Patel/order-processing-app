@@ -6,7 +6,7 @@ function toStatusText(status, fallback = "Unknown") {
   }
 
   if (typeof status === "string" && Number.isNaN(Number(status))) {
-    return status;
+    return status === "EnRoute" ? "En Route" : status;
   }
 
   return getStatusLabel(status);
@@ -39,7 +39,7 @@ function getStatusClassName(statusText) {
 }
 
 function StatusLabel({ status, label }) {
-  const statusText = String(label ?? toStatusText(status));
+  const statusText = String(toStatusText(label ?? status));
   return <span className={getStatusClassName(statusText)}>{statusText}</span>;
 }
 

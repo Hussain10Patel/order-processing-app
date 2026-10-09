@@ -8,5 +8,7 @@ public enum OrderStatus
     Approved = 4,
     Processed = 5,
     InProduction = 6,
-    Scheduled = 7
+    Scheduled = 7,
+    EnRoute = 8,
+    Delivered = 9
 }

@@ -82,7 +82,7 @@ public class ExportService : IExportService
             .ToListAsync(cancellationToken);
 
         var csv = new StringBuilder();
-        csv.AppendLine("DistributionCentre|OrderNumber|DeliveryDate|Status|TotalPallets|Notes");
+        csv.AppendLine("DistributionCentre|OrderNumber|DeliveryDate|Status|TotalPallets|Notes|OriginalCsvDeliveryDate|EnRouteAtUtc|DurationHours|ExpectedDeliveryAtUtc|DeliveredAtUtc|IsDeliveryEstimated");
 
         foreach (var schedule in schedules)
         {
@@ -91,9 +91,15 @@ public class ExportService : IExportService
                 EscapeCsv(schedule.Order?.DistributionCentre?.Name ?? string.Empty),
                 EscapeCsv(schedule.Order?.OrderNumber ?? string.Empty),
                 schedule.DeliveryDate.ToString("yyyy-MM-dd"),
-                EscapeCsv(schedule.Status),
+                EscapeCsv(schedule.Order?.Status.ToString() ?? schedule.Status),
                 FormatDecimal(schedule.Order?.Items.Sum(i => i.Pallets) ?? 0, "0.##"),
-                EscapeCsv(schedule.Notes ?? string.Empty)
+                EscapeCsv(schedule.Notes ?? string.Empty),
+                schedule.Order?.OriginalCsvDeliveryDate?.ToString("yyyy-MM-dd") ?? string.Empty,
+                schedule.Order?.EnRouteAtUtc?.ToString("O") ?? string.Empty,
+                schedule.Order?.ExpectedDeliveryDurationHours?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                schedule.Order?.ExpectedDeliveryAtUtc?.ToString("O") ?? string.Empty,
+                schedule.Order?.DeliveredAtUtc?.ToString("O") ?? string.Empty,
+                (schedule.Order?.IsDeliveryEstimated ?? false).ToString()
             }));
         }
 

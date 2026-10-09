@@ -89,7 +89,7 @@ public class ReportsController : ControllerBase
         var result = await _reportService.GetSummaryByDeliveryDateAsync(date, cancellationToken);
 
         var csv = new StringBuilder();
-        csv.AppendLine("PoNumber,Dc,DeliveryDate,Status");
+        csv.AppendLine("PoNumber,Dc,DeliveryDate,Status,Supplier,OriginalCsvDeliveryDate,EnRouteAtUtc,DurationHours,ExpectedDeliveryAtUtc,DeliveredAtUtc,IsDeliveryEstimated");
         foreach (var row in result.DeliverySummary)
         {
             csv.AppendLine(string.Join(",", new[]
@@ -97,7 +97,14 @@ public class ReportsController : ControllerBase
                 Escape(row.PoNumber),
                 Escape(row.Dc),
                 Escape(row.DeliveryDate),
-                Escape(row.Status)
+                Escape(row.Status),
+                Escape(row.Supplier),
+                Escape(row.OriginalCsvDeliveryDate ?? string.Empty),
+                Escape(row.EnRouteAtUtc?.ToString("O") ?? string.Empty),
+                Escape(row.ExpectedDeliveryDurationHours?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty),
+                Escape(row.ExpectedDeliveryAtUtc?.ToString("O") ?? string.Empty),
+                Escape(row.DeliveredAtUtc?.ToString("O") ?? string.Empty),
+                row.IsDeliveryEstimated.ToString()
             }));
         }
 

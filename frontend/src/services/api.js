@@ -451,6 +451,13 @@ export async function getExcludedOrdersFromPlan() {
   return request("/api/production-delivery/excluded-orders", { method: "GET" });
 }
 
+export async function setOrderEnRoute(orderId, durationHours) {
+  return request(`/api/production-delivery/orders/${orderId}/en-route`, {
+    method: "POST",
+    body: JSON.stringify({ durationHours }),
+  });
+}
+
 export async function saveProductionDecision(payload) {
   return request("/api/production/decision", {
     method: "POST",
@@ -764,6 +771,8 @@ export function getStatusLabel(status) {
     5: "Processed",
     6: "In Production",
     7: "Scheduled",
+    8: "En Route",
+    9: "Delivered",
   };
 
   const key = Number(status);

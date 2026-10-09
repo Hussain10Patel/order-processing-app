@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Services;
 
@@ -66,6 +67,10 @@ public sealed class ProductionAssignmentController : ControllerBase
             var result = await _assignmentService.SetDeliveryDateAsync(orderId, dto.DeliveryDate.Value, cancellationToken);
             return result is null ? NotFound() : Ok(result);
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
+        }
         catch (InvalidOperationException exception)
         {
             return UnprocessableEntity(new { message = exception.Message });
@@ -81,6 +86,10 @@ public sealed class ProductionAssignmentController : ControllerBase
         {
             var result = await _assignmentService.UnassignAsync(orderId, cancellationToken);
             return result is null ? NotFound() : Ok(result);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
         }
         catch (InvalidOperationException exception)
         {

@@ -316,6 +316,7 @@ public class OrderService : IOrderService
                     OrderNumber = orderNumber,
                     OrderDate = orderDate,
                     DeliveryDate = deliveryDate,
+                    OriginalCsvDeliveryDate = deliveryDate,
                     DistributionCentreId = group.First().DistributionCentre.Id,
                     Source = OrderSource.CSV,
                     Status = OrderStatus.Pending
@@ -1224,6 +1225,7 @@ public class OrderService : IOrderService
             OrderNumber = order.OrderNumber,
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
             DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
+            OriginalCsvDeliveryDate = order.OriginalCsvDeliveryDate?.ToString("yyyy-MM-dd"),
             DistributionCentreId = order.DistributionCentreId,
             DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
             Source = order.Source,
@@ -1374,6 +1376,11 @@ public class OrderService : IOrderService
         if (order is null)
         {
             return null;
+        }
+
+        if (order.Status is OrderStatus.Scheduled or OrderStatus.EnRoute or OrderStatus.Delivered)
+        {
+            throw new InvalidOperationException("Unassign or unschedule the order before adjusting it. En Route and Delivered orders cannot be adjusted.");
         }
 
         if (dto.Items.Count == 0)
@@ -2194,6 +2201,7 @@ public class OrderService : IOrderService
             OrderNumber = order.OrderNumber,
             OrderDate = order.OrderDate.ToString("yyyy-MM-dd"),
             DeliveryDate = order.DeliveryDate?.ToString("yyyy-MM-dd"),
+            OriginalCsvDeliveryDate = order.OriginalCsvDeliveryDate?.ToString("yyyy-MM-dd"),
             DistributionCentreId = order.DistributionCentreId,
             DistributionCentreName = order.DistributionCentre?.Name ?? string.Empty,
             Source = order.Source,

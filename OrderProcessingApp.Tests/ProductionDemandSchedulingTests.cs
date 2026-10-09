@@ -10,6 +10,18 @@ namespace OrderProcessingApp.Tests;
 
 public class ProductionDemandSchedulingTests
 {
+    [Theory]
+    [InlineData(OrderStatus.Scheduled)]
+    [InlineData(OrderStatus.EnRoute)]
+    [InlineData(OrderStatus.Delivered)]
+    public async Task DeliveryLifecycleStatuses_PreserveScheduledDemandAndHistoricalStockCalculations(OrderStatus status)
+    {
+        await using var fixture = await TestFixture.CreateAsync();
+        var date = new DateTime(2026, 10, 10);
+        await fixture.AddOrderAsync("LIFECYCLE-DEMAND", status, 200m, date, isScheduled: true);
+        Assert.Equal(200m, await fixture.GetDemandAsync(date));
+    }
+
     [Fact]
     public async Task ScheduledOrder_ContributesToProductionDemand()
     {

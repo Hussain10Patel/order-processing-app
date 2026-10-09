@@ -37,6 +37,13 @@ public class ProductionDeliveryPlanEventDto
     public bool IsScheduled { get; set; }
     public string ScheduleStatus { get; set; } = string.Empty;
     public bool CanSchedule { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public bool CanSetEnRoute { get; set; }
+    public DateTimeOffset? EnRouteAtUtc { get; set; }
+    public decimal? ExpectedDeliveryDurationHours { get; set; }
+    public DateTimeOffset? ExpectedDeliveryAtUtc { get; set; }
+    public DateTimeOffset? DeliveredAtUtc { get; set; }
+    public bool IsDeliveryEstimated { get; set; }
     public List<ProductionDeliveryPlanProductQuantityDto> ProductQuantities { get; set; } = new();
     public List<ProductionDeliveryPlanStockValueDto> StockBefore { get; set; } = new();
     public List<ProductionDeliveryPlanStockValueDto> StockAfter { get; set; } = new();
@@ -46,6 +53,7 @@ public class ProductionDeliveryPlanEventDto
 
 public class ProductionDeliveryPlanDto
 {
+    public string BusinessTimeZone { get; set; } = "Africa/Johannesburg";
     public int Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }

@@ -31,6 +31,15 @@ builder.Services.AddSwaggerGen();
 builder.Services.Configure<CsvImportOptions>(
     builder.Configuration.GetSection("CsvImport")
 );
+builder.Services.AddOptions<DeliveryLifecycleOptions>()
+    .Bind(builder.Configuration.GetSection("DeliveryLifecycle"))
+    .Validate(options => options.PollIntervalSeconds is >= 1 and <= 3600,
+        "DeliveryLifecycle:PollIntervalSeconds must be between 1 and 3600.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<DeliveryClock>();
+builder.Services.AddScoped<DeliveryLifecycleService>();
+builder.Services.AddHostedService<DeliveryLifecycleWorker>();
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");

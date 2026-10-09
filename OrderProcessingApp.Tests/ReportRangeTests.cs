@@ -81,7 +81,7 @@ public class ReportRangeTests
     }
 
     [Fact]
-    public async Task GetSummaryByDeliveryDateRangeAsync_OrdersByStatus_UsesComputedStatus()
+    public async Task GetSummaryByDeliveryDateRangeAsync_OrdersByStatus_UsesPersistedStatus()
     {
         await using var fixture = await TestFixture.CreateAsync();
 

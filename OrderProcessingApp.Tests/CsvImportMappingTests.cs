@@ -39,6 +39,7 @@ public class CsvImportMappingTests
 
         var firstOrder = Assert.Single(orders, x => x.OrderNumber == "1204466650");
         Assert.Equal(new DateTime(2026, 4, 2), firstOrder.DeliveryDate);
+        Assert.Equal(new DateTime(2026, 4, 2), firstOrder.OriginalCsvDeliveryDate);
         var firstItem = Assert.Single(firstOrder.Items);
         Assert.Equal(448m, firstItem.Quantity);
         Assert.Equal(424.28m, firstItem.Price);
@@ -113,6 +114,7 @@ public class CsvImportMappingTests
         await using var db = fixture.CreateDbContext();
         var order = await db.Orders.SingleAsync(x => x.OrderNumber == "1204466653");
         Assert.Null(order.DeliveryDate);
+        Assert.Null(order.OriginalCsvDeliveryDate);
 
         var assignmentService = new ProductionAssignmentService(db);
         var approved = await db.Orders.SingleAsync(x => x.Id == order.Id);

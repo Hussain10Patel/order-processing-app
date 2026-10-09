@@ -8,10 +8,15 @@ import {
   getProductionDeliveryPlan,
   removeOrderFromPlan,
   scheduleDelivery,
+  setOrderEnRoute,
   updateProductionDeliveryEventQuantities,
   updateProductionDeliveryOpeningStock,
   updateProductionDeliveryOrderDate,
 } from "../services/api";
+import StatusLabel from "../components/StatusLabel";
+import { formatBusinessDateTime } from "../utils/date";
+
+const EMPTY_EVENTS = [];
 
 function toNumber(value) {
   const parsed = Number(value);
@@ -54,8 +59,11 @@ function ProductionDeliveryPage() {
   const [excludedOrders, setExcludedOrders] = useState([]);
   const [removingFromPlan, setRemovingFromPlan] = useState(null);
   const [addingToPlan, setAddingToPlan] = useState(null);
+  const [dispatchEventId, setDispatchEventId] = useState(null);
+  const [durationHours, setDurationHours] = useState("");
   const plannerContainerRef = useRef(null);
   const plannerTableRef = useRef(null);
+  const dirtyDateIdsRef = useRef(new Set());
 
   useLayoutEffect(() => {
     const container = plannerContainerRef.current;
@@ -110,6 +118,7 @@ function ProductionDeliveryPage() {
         }
       });
       setPendingDates(nextDates);
+      dirtyDateIdsRef.current.clear();
     } catch (requestError) {
       setPlan(null);
       setError(requestError.message || "Unable to load Production / Delivery plan");
@@ -122,8 +131,59 @@ function ProductionDeliveryPage() {
     void loadPlan();
   }, []);
 
+  useEffect(() => {
+    let current = true;
+    async function refreshStatuses() {
+      try {
+        const response = await getProductionDeliveryPlan();
+        if (!current) return;
+        const latestById = new Map((response.events || []).map((event) => [event.id, event]));
+        setPendingDates((previous) => {
+          const next = { ...previous };
+          for (const event of response.events || []) {
+            if (event.eventType === "Order" && (!dirtyDateIdsRef.current.has(event.id) || ["EnRoute", "Delivered"].includes(event.status))) {
+              next[event.id] = event.plannedDeliveryDate || "";
+              if (["EnRoute", "Delivered"].includes(event.status)) dirtyDateIdsRef.current.delete(event.id);
+            }
+          }
+          return next;
+        });
+        setPlan((previous) => previous ? {
+          ...previous,
+          events: previous.events.map((event) => {
+            const latest = latestById.get(event.id);
+            if (!latest) return event;
+            return {
+              ...event,
+              status: latest.status,
+              plannedDeliveryDate: latest.plannedDeliveryDate,
+              scheduleStatus: latest.scheduleStatus,
+              isScheduled: latest.isScheduled,
+              canSchedule: latest.canSchedule,
+              canSetEnRoute: latest.canSetEnRoute,
+              enRouteAtUtc: latest.enRouteAtUtc,
+              expectedDeliveryDurationHours: latest.expectedDeliveryDurationHours,
+              expectedDeliveryAtUtc: latest.expectedDeliveryAtUtc,
+              deliveredAtUtc: latest.deliveredAtUtc,
+              isDeliveryEstimated: latest.isDeliveryEstimated,
+            };
+          }),
+        } : previous);
+      } catch (requestError) {
+        if (current) setError(requestError.message || "Unable to refresh delivery statuses");
+      }
+    }
+    const interval = setInterval(refreshStatuses, 60000);
+    window.addEventListener("focus", refreshStatuses);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refreshStatuses);
+    };
+  }, []);
+
   const products = plan?.products || [];
-  const events = plan?.events || [];
+  const events = plan?.events || EMPTY_EVENTS;
 
   const openingEvent = useMemo(() => events.find((event) => event.eventType === "OpeningStock") || null, [events]);
 
@@ -187,8 +247,30 @@ function ProductionDeliveryPage() {
         notes: null,
       });
       await loadPlan();
+    } catch (requestError) {
+      setError(requestError.message || "Unable to schedule delivery");
     } finally {
       setSchedulingId(null);
+    }
+  }
+
+  async function confirmEnRoute(event) {
+    const hours = Number(durationHours);
+    if (!durationHours.trim() || !Number.isFinite(hours) || hours <= 0) {
+      setError("Enter a valid positive delivery duration in hours.");
+      return;
+    }
+    setEventSaving(event.id, "dispatch", true);
+    setError("");
+    try {
+      await setOrderEnRoute(event.orderId, hours);
+      setDispatchEventId(null);
+      setDurationHours("");
+      await loadPlan();
+    } catch (requestError) {
+      setError(requestError.message || "Unable to set the order to En Route");
+    } finally {
+      setEventSaving(event.id, "dispatch", false);
     }
   }
 
@@ -264,13 +346,8 @@ function ProductionDeliveryPage() {
   }
 
   function updatePendingDate(eventId, value) {
+    dirtyDateIdsRef.current.add(eventId);
     setPendingDates((current) => ({ ...current, [eventId]: value }));
-  }
-
-  function renderCellValue(event, productId) {
-    const stockValue = (event.stockAfter || []).find((entry) => entry.productId === productId)?.quantity;
-    const quantityValue = (event.productQuantities || []).find((entry) => entry.productId === productId)?.quantity;
-    return { stockValue, quantityValue };
   }
 
   return (
@@ -278,6 +355,7 @@ function ProductionDeliveryPage() {
       <header className="page-header">
         <h2>Production / Delivery</h2>
         <p>Persistent Excel-style planning that reuses the live production and delivery workflow.</p>
+        <p>Times shown in {plan?.businessTimeZone || "Africa/Johannesburg"}. Automatic Delivered status is estimated, not confirmation of receipt.</p>
       </header>
 
       {error && <p className="alert error">{error}</p>}
@@ -342,6 +420,9 @@ function ProductionDeliveryPage() {
                         {isOrder ? (
                           <input
                             type="date"
+                            aria-label={`Scheduled Delivery Date for ${event.orderNumber}`}
+                            disabled={["EnRoute", "Delivered"].includes(event.status)}
+                            min={event.orderDate}
                             value={pendingDates[event.id] || ""}
                             onChange={(e) => updatePendingDate(event.id, e.target.value)}
                           />
@@ -366,9 +447,30 @@ function ProductionDeliveryPage() {
                       <td className="sticky-action-col">
                         <div className="action-stack">
                           {isOrder && (
-                            <button type="button" onClick={() => void saveOrderDate(event)} disabled={isSaving(event.id, "date") || !event.orderId}>
+                            <button type="button" onClick={() => void saveOrderDate(event)} disabled={isSaving(event.id, "date") || !event.orderId || ["EnRoute", "Delivered"].includes(event.status)}>
                               {isSaving(event.id, "date") ? "Saving..." : "Save Date"}
                             </button>
+                          )}
+                          {isOrder && event.canSetEnRoute && (
+                            dispatchEventId === event.id ? (
+                              <form onSubmit={(submitEvent) => { submitEvent.preventDefault(); void confirmEnRoute(event); }}>
+                                <label>
+                                  Expected duration (hours)
+                                  <input
+                                    aria-label={`Expected delivery duration for ${event.orderNumber}`}
+                                    type="number"
+                                    step="any"
+                                    required
+                                    value={durationHours}
+                                    onChange={(inputEvent) => setDurationHours(inputEvent.target.value)}
+                                  />
+                                </label>
+                                <button type="submit" disabled={isSaving(event.id, "dispatch")}>Confirm En Route</button>
+                                <button type="button" className="secondary" disabled={isSaving(event.id, "dispatch")} onClick={() => setDispatchEventId(null)}>Cancel</button>
+                              </form>
+                            ) : (
+                              <button type="button" onClick={() => { setDispatchEventId(event.id); setDurationHours(""); setError(""); }}>Set En Route</button>
+                            )
                           )}
                           {(isProduction || isAdjustment) && (
                             <button type="button" className="secondary" onClick={() => void saveEventQuantities(event)} disabled={isSaving(event.id, "quantities")}>
@@ -396,9 +498,14 @@ function ProductionDeliveryPage() {
 
                     <tr className={isOrder ? "stock-after-row order-stock-row" : "stock-after-row"}>
                       <td className="sticky-col sticky-col-1"><strong>STOCK AFTER</strong></td>
-                      <td className="sticky-col sticky-col-2">{isOrder ? event.scheduleStatus : ""}</td>
-                      <td className="sticky-col sticky-col-3" />
-                      <td className="sticky-col sticky-col-4" />
+                      <td className="sticky-col sticky-col-2">{isOrder && <StatusLabel status={event.status || event.scheduleStatus} />}</td>
+                      <td className="sticky-col sticky-col-3">
+                        {isOrder && event.expectedDeliveryDurationHours != null && <span>{event.expectedDeliveryDurationHours} hours from dispatch</span>}
+                      </td>
+                      <td className="sticky-col sticky-col-4">
+                        {isOrder && event.expectedDeliveryAtUtc && <div>Expected: {formatBusinessDateTime(event.expectedDeliveryAtUtc, plan.businessTimeZone)}</div>}
+                        {isOrder && event.isDeliveryEstimated && <div>Delivered (estimated): {formatBusinessDateTime(event.deliveredAtUtc, plan.businessTimeZone)}</div>}
+                      </td>
                       {products.map((product) => {
                         const afterValue = after[product.productId] ?? 0;
                         const beforeValue = before[product.productId] ?? 0;
@@ -417,7 +524,7 @@ function ProductionDeliveryPage() {
                             + Add Production
                           </button>
                           {isOrder && (
-                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.orderId || !(pendingDates[event.id] || event.plannedDeliveryDate)}>
+                            <button type="button" onClick={() => void handleSchedule(event)} disabled={schedulingId === event.id || !event.canSchedule || !event.orderId || !(pendingDates[event.id] || event.plannedDeliveryDate)}>
                               {schedulingId === event.id ? "Scheduling..." : "Schedule"}
                             </button>
                           )}

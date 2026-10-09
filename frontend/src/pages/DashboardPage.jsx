@@ -13,7 +13,7 @@ function getDaysAgo(days) {
   return date.toISOString().slice(0, 10);
 }
 
-const statusOptions = [1, 2, 3, 4, 5, 6, 7];
+const statusOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 function DashboardPage() {
   const navigate = useNavigate();

@@ -152,11 +152,13 @@ public class SalesByDcDto
 
 public class ReportSummaryDto
 {
+    public string BusinessTimeZone { get; set; } = "Africa/Johannesburg";
     public int TotalOrders { get; set; }
     public decimal TotalValue { get; set; }
     public List<ReportStatusCountDto> OrdersByStatus { get; set; } = new();
     public List<ReportSalesByProductSummaryDto> SalesByProduct { get; set; } = new();
     public List<ReportDeliverySummaryDto> DeliverySummary { get; set; } = new();
+    public List<ReportDeliveryBreakdownDto> DeliveryBreakdown { get; set; } = new();
 }
 
 public class ReportAvailableDateDto
@@ -184,9 +186,24 @@ public class ReportSalesByProductSummaryDto
 
 public class ReportDeliverySummaryDto
 {
+    public int Id { get; set; }
     public string PoNumber { get; set; } = string.Empty;
+    public string Supplier { get; set; } = string.Empty;
     public string Dc { get; set; } = string.Empty;
     public string DeliveryDate { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string? OriginalCsvDeliveryDate { get; set; }
+    public DateTimeOffset? EnRouteAtUtc { get; set; }
+    public decimal? ExpectedDeliveryDurationHours { get; set; }
+    public DateTimeOffset? ExpectedDeliveryAtUtc { get; set; }
+    public DateTimeOffset? DeliveredAtUtc { get; set; }
+    public bool IsDeliveryEstimated { get; set; }
 }
 
+public class ReportDeliveryBreakdownDto
+{
+    public string Supplier { get; set; } = string.Empty;
+    public string Dc { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public int Count { get; set; }
+}

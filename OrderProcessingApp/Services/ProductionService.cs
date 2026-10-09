@@ -330,7 +330,7 @@ public class ProductionService : IProductionService
 
         if (!OrderWorkflowStatusRules.IsProductionDecisionEditable(order.Status))
         {
-            throw new InvalidOperationException($"Production decisions can only be saved for Approved, InProduction, or Processed orders. Current status: {order.Status}.");
+            throw new InvalidOperationException($"Production decisions can only be saved for Approved, InProduction, Processed or Scheduled orders. Current status: {order.Status}.");
         }
 
         if (!order.DeliveryDate.HasValue)
@@ -487,7 +487,8 @@ public class ProductionService : IProductionService
             throw new InvalidOperationException("All items must be confirmed before processing");
         }
 
-        if (totalOrderItems > 0 && decisionsRecorded == totalOrderItems && allItemsResolved && order.Status != OrderStatus.Processed)
+        if (totalOrderItems > 0 && decisionsRecorded == totalOrderItems && allItemsResolved
+            && order.Status is OrderStatus.Approved or OrderStatus.InProduction)
         {
             order.Status = OrderStatus.Processed;
             await _dbContext.SaveChangesAsync(cancellationToken);

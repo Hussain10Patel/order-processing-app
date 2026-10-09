@@ -720,7 +720,7 @@ public class ProductionDeliveryPlannerTests
     }
 
     [Fact]
-    public async Task DeleteOrderRemovesDeliverySchedule()
+    public async Task DeleteOrderAfterUnscheduling_LeavesNoDeliverySchedule()
     {
         await using var fixture = await PlannerFixture.CreateAsync();
 
@@ -737,6 +737,7 @@ public class ProductionDeliveryPlannerTests
         }
 
         var orderService = fixture.CreateOrderService();
+        await deliveryService.UnscheduleDeliveryAsync(fixture.Order1.Id);
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
         await using var db2 = fixture.CreateDbContext();
@@ -752,6 +753,7 @@ public class ProductionDeliveryPlannerTests
         await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, null);
 
         var orderService = fixture.CreateOrderService();
+        await deliveryService.UnscheduleDeliveryAsync(fixture.Order1.Id);
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
         var schedules = await deliveryService.GetScheduleByDateAsync(fixture.Order1.DeliveryDate!.Value);
@@ -767,6 +769,7 @@ public class ProductionDeliveryPlannerTests
         await deliveryService.ScheduleDeliveryAsync(fixture.Order1.Id, fixture.Order1.DeliveryDate!.Value, null);
 
         var orderService = fixture.CreateOrderService();
+        await deliveryService.UnscheduleDeliveryAsync(fixture.Order1.Id);
         await orderService.SoftDeleteOrderAsync(fixture.Order1.Id);
 
         var exportService = fixture.CreateExportService();
@@ -1124,6 +1127,10 @@ public class ProductionDeliveryPlannerTests
         Assert.Single(planWithFirst.Events, x => x.OrderId == firstOrderId);
 
         // ---- DELETE ----
+        await using (var assignmentDb = fixture.CreateDbContext())
+        {
+            await new ProductionAssignmentService(assignmentDb).UnassignAsync(firstOrderId);
+        }
         await orderService.SoftDeleteOrderAsync(firstOrderId);
 
         await using (var db = fixture.CreateDbContext())
@@ -1449,7 +1456,7 @@ public class ProductionDeliveryPlannerTests
                     .Include(x => x.DistributionCentre)
                     .Include(x => x.Items)
                         .ThenInclude(x => x.Product)
-                    .Where(x => (x.Status == OrderStatus.Approved || x.Status == OrderStatus.InProduction || x.Status == OrderStatus.Processed)
+                    .Where(x => OrderWorkflowStatusRules.ProductionAndDeliveryQueryableStatuses.Contains(x.Status)
                              && !x.IsExcludedFromPlan)
                     .OrderBy(x => x.DeliveryDate)
                     .ThenBy(x => x.OrderNumber)

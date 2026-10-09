@@ -27,7 +27,7 @@ public class PastelExportService : IPastelExportService
             .Include(x => x.Items)
                 .ThenInclude(x => x.Product)
             .Where(x => x.DeliveryDate.HasValue && x.DeliveryDate.Value >= start && x.DeliveryDate.Value < end
-                && (x.Status == OrderStatus.Approved || x.Status == OrderStatus.Processed))
+                && OrderWorkflowStatusRules.InvoiceExportStatuses.Contains(x.Status))
             .OrderBy(x => x.DistributionCentre!.Name)
             .ThenBy(x => x.OrderNumber)
             .ToListAsync(cancellationToken);

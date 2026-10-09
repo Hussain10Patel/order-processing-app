@@ -358,7 +358,7 @@ function DeliveryPage() {
                   <button
                     type="button"
                     className="secondary table-action-button"
-                    disabled={unschedulingOrderId === row.orderId}
+                    disabled={unschedulingOrderId === row.orderId || ["EnRoute", "Delivered"].includes(row.orderStatus)}
                     onClick={() => {
                       void handleUnschedule(row);
                     }}

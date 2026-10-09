@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using OrderProcessingApp.DTOs;
 using OrderProcessingApp.Services;
 namespace OrderProcessingApp.Controllers;
@@ -12,6 +13,29 @@ public class ProductionDeliveryController : ControllerBase
     public ProductionDeliveryController(IProductionDeliveryPlannerService plannerService)
     {
         _plannerService = plannerService;
+    }
+
+    [HttpPost("orders/{orderId:int}/en-route")]
+    public async Task<ActionResult<DeliveryLifecycleDto>> SetEnRoute(int orderId,
+        [FromBody] SetEnRouteDto dto, [FromServices] DeliveryLifecycleService lifecycleService,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await lifecycleService.SetEnRouteAsync(orderId, dto.DurationHours, cancellationToken));
+        }
+        catch (KeyNotFoundException exception)
+        {
+            return NotFound(new { message = exception.Message });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return BadRequest(new { message = exception.Message });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
+        }
     }
 
     [HttpGet]
@@ -96,6 +120,10 @@ public class ProductionDeliveryController : ControllerBase
         {
             var result = await _plannerService.UpdateOrderDeliveryDateAsync(eventId, dto, cancellationToken);
             return Ok(result);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(new { message = "The order changed concurrently. Refresh and try again." });
         }
         catch (KeyNotFoundException ex)
         {

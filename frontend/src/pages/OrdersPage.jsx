@@ -32,7 +32,7 @@ const defaultManualForm = {
   items: [{ productId: "", quantity: "", price: "", systemPriceWarning: "", priceLookupPending: false }],
 };
 
-const statusOptions = [0, 1, 3, 4, 5, 8];
+const statusOptions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 function formatDecimal(value) {
   const amount = Number(value);
@@ -1436,6 +1436,10 @@ function OrdersPage() {
               <strong>{formatDate(selectedOrder.deliveryDate)}</strong>
             </div>
             <div className="order-info-card">
+              <span>Original CSV Delivery Date</span>
+              <strong>{formatDate(selectedOrder.originalCsvDeliveryDate)}</strong>
+            </div>
+            <div className="order-info-card">
               <span>Distribution Centre</span>
               <strong><DcLabel row={selectedOrder} /></strong>
             </div>
@@ -1462,9 +1466,10 @@ function OrdersPage() {
             <textarea value={adjustmentNotes} onChange={(event) => setAdjustmentNotes(event.target.value)} />
           </div>
           <div style={{ marginTop: 12 }}>
-            <button type="button" onClick={submitAdjustment} disabled={adjusting}>
+            <button type="button" onClick={submitAdjustment} disabled={adjusting || [7, 8, 9].includes(Number(selectedOrder.status))}>
               {adjusting ? "Adjusting..." : "Adjust Order"}
             </button>
+            {[7, 8, 9].includes(Number(selectedOrder.status)) && <p className="status-text">Unassign or unschedule before adjusting a Scheduled order. En Route and Delivered orders cannot be adjusted.</p>}
           </div>
           {adjustMessage && (
             <p className={adjustMessage.includes("success") ? "alert success" : "alert error"}>

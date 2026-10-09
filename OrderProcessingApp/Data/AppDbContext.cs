@@ -50,6 +50,13 @@ public class AppDbContext : DbContext
             entity.Property(x => x.IsActive).HasDefaultValue(true);
             entity.Property(x => x.IsExcludedFromPlan).HasDefaultValue(false);
             entity.Property(x => x.IsAssignedToProduction).HasDefaultValue(false);
+            entity.Property(x => x.Status).IsConcurrencyToken();
+            entity.Property(x => x.IsAssignedToProduction).IsConcurrencyToken();
+            entity.Property(x => x.DeliveryDate).IsConcurrencyToken();
+            entity.Property(x => x.EnRouteAtUtc).HasColumnType("timestamp with time zone").IsConcurrencyToken();
+            entity.Property(x => x.ExpectedDeliveryAtUtc).HasColumnType("timestamp with time zone").IsConcurrencyToken();
+            entity.Property(x => x.DeliveredAtUtc).HasColumnType("timestamp with time zone");
+            entity.HasIndex(x => new { x.Status, x.IsAssignedToProduction });
             entity.Property(x => x.TotalValue).HasPrecision(18, 2);
             entity.Property(x => x.TotalPallets).HasPrecision(18, 2);
             entity.HasQueryFilter(x => x.IsActive);

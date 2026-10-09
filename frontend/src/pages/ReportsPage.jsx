@@ -4,6 +4,7 @@ import DcLabel from "../components/DcLabel";
 import MultiDcFilter from "../components/MultiDcFilter";
 import StatusLabel from "../components/StatusLabel";
 import StatusBlock from "../components/StatusBlock";
+import { formatBusinessDateTime } from "../utils/date";
 import {
   downloadExport,
   formatCurrency,
@@ -13,7 +14,12 @@ import {
 } from "../services/api";
 
 function getToday() {
-  return new Date().toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Johannesburg",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 }
 
 function toYMD(value) {
@@ -37,7 +43,7 @@ function isReportEmpty(report) {
   return (
     totalOrders === 0 &&
     totalValue === 0 &&
-    ordersByStatus.length === 0 &&
+    ordersByStatus.every((row) => Number(row.count) === 0) &&
     salesByProduct.length === 0 &&
     deliverySummary.length === 0
   );
@@ -56,6 +62,7 @@ function ReportsPage() {
   const [selectedDistributionCentreIds, setSelectedDistributionCentreIds] = useState([]);
   const [reportDates, setReportDates] = useState([]);
   const [reportMode, setReportMode] = useState("single");
+  const [appliedRange, setAppliedRange] = useState(null);
 
   useEffect(() => {
     async function loadReportDates() {
@@ -73,6 +80,7 @@ function ReportsPage() {
     if (reportMode !== "single") {
       return;
     }
+    let current = true;
 
     async function loadReports() {
       setLoading(true);
@@ -82,18 +90,45 @@ function ReportsPage() {
       try {
         const formattedDate = toYMD(date);
         const response = await getReportSummary(formattedDate);
-        setReport(response);
+        if (current) setReport(response);
       } catch (requestError) {
         console.error("Failed to load reports:", requestError);
-        setError(requestError.message || "Unable to load reports");
-        setReport(null);
+        if (current) {
+          setError(requestError.message || "Unable to load reports");
+          setReport(null);
+        }
       } finally {
-        setLoading(false);
+        if (current) setLoading(false);
       }
     }
 
     void loadReports();
+    return () => { current = false; };
   }, [date, reportMode]);
+
+  useEffect(() => {
+    let current = true;
+    async function refreshReport() {
+      try {
+        const response = reportMode === "range" && appliedRange
+          ? await getReportSummary(null, appliedRange.from, appliedRange.to)
+          : await getReportSummary(toYMD(date));
+        if (current) {
+          setReport(response);
+          setError("");
+        }
+      } catch (requestError) {
+        if (current) setError(requestError.message || "Unable to refresh report statuses");
+      }
+    }
+    const interval = setInterval(refreshReport, 60000);
+    window.addEventListener("focus", refreshReport);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refreshReport);
+    };
+  }, [date, reportMode, appliedRange]);
 
   useEffect(() => {
     setSelectedDistributionCentreIds([]);
@@ -145,6 +180,7 @@ function ReportsPage() {
     setError("");
     setRangeError("");
     setReportMode("range");
+    setAppliedRange({ from: fromDate, to: toDate });
 
     try {
       const response = await getReportSummary(null, fromDate, toDate);
@@ -175,6 +211,7 @@ function ReportsPage() {
       <header className="page-header">
         <h2>Reports</h2>
         <p>Review order totals, product sales, and delivery summaries by date.</p>
+        <p>Filtered by saved scheduled delivery date. Times shown in {report?.businessTimeZone || "Africa/Johannesburg"}. Automatic delivery is estimated, not confirmation of receipt.</p>
       </header>
 
       <div className="panel">
@@ -264,6 +301,12 @@ function ReportsPage() {
               <h3>Total Order Value</h3>
               <strong>{formatCurrency(totalValue)}</strong>
             </div>
+            {["Scheduled", "EnRoute", "Delivered"].map((status) => (
+              <div className="panel stat-card" key={status}>
+                <h3>{status === "EnRoute" ? "En Route" : status}</h3>
+                <strong>{ordersByStatus.find((row) => row.status === status)?.count ?? 0}</strong>
+              </div>
+            ))}
           </div>
 
           <div className="grid-2 panels-grid">
@@ -272,11 +315,11 @@ function ReportsPage() {
               {ordersByStatus.length > 0 ? (
                 <DataTable
                   columns={[
-                    { key: "status", header: "Status" },
+                    { key: "status", header: "Status", render: (row) => <StatusLabel status={row.status} /> },
                     { key: "count", header: "Count" },
                   ]}
                   data={ordersByStatus}
-                  rowKey="id"
+                  rowKey="status"
                   sortKey=""
                   sortDirection="asc"
                   onSort={() => {}}
@@ -308,6 +351,23 @@ function ReportsPage() {
           </div>
 
           <div className="panel">
+            <h3>Delivery Breakdown by Supplier / DC / Status</h3>
+            <DataTable
+              columns={[
+                { key: "supplier", header: "Supplier", render: (row) => row.supplier || "-" },
+                { key: "dc", header: "Distribution Centre" },
+                { key: "status", header: "Status", render: (row) => <StatusLabel status={row.status} /> },
+                { key: "count", header: "Orders" },
+              ]}
+              data={(report?.deliveryBreakdown || []).map((row, index) => ({ ...row, id: index }))}
+              rowKey="id"
+              sortKey=""
+              sortDirection="asc"
+              onSort={() => {}}
+            />
+          </div>
+
+          <div className="panel">
             <h3>Delivery Summary</h3>
             <div style={{ marginBottom: 10 }}>
               <MultiDcFilter
@@ -321,17 +381,23 @@ function ReportsPage() {
               <DataTable
                 columns={[
                   { key: "poNumber", header: "Order Number" },
+                  { key: "supplier", header: "Supplier", render: (row) => row.supplier || "-" },
                   {
                     key: "dc",
                     header: "Distribution Centre",
                     render: (row) => <DcLabel value={row.dc ?? row.distributionCentre} />,
                   },
-                  { key: "deliveryDate", header: "Delivery Date", render: (row) => formatDate(row.deliveryDate) },
+                  { key: "deliveryDate", header: "Scheduled Delivery Date", render: (row) => formatDate(row.deliveryDate) },
+                  { key: "originalCsvDeliveryDate", header: "Original CSV Delivery Date", render: (row) => formatDate(row.originalCsvDeliveryDate) },
+                  { key: "enRouteAtUtc", header: "En Route Since", render: (row) => formatBusinessDateTime(row.enRouteAtUtc, report.businessTimeZone) },
+                  { key: "expectedDeliveryDurationHours", header: "Expected Hours", render: (row) => row.expectedDeliveryDurationHours ?? "-" },
+                  { key: "expectedDeliveryAtUtc", header: "Expected Delivery", render: (row) => formatBusinessDateTime(row.expectedDeliveryAtUtc, report.businessTimeZone) },
                   {
                     key: "status",
                     header: "Status",
-                    render: (row) => <StatusLabel label={row.status} />,
+                    render: (row) => <><StatusLabel label={row.status} />{row.isDeliveryEstimated && <div>Estimated delivery</div>}</>,
                   },
+                  { key: "deliveredAtUtc", header: "Delivered At (Estimated)", render: (row) => formatBusinessDateTime(row.deliveredAtUtc, report.businessTimeZone) },
                 ]}
                 data={filteredDeliverySummary.map((delivery, index) => ({
                   ...delivery,

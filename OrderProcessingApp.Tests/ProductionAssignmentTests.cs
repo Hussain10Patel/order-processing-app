@@ -72,7 +72,7 @@ public class ProductionAssignmentTests
     }
 
     [Fact]
-    public async Task SetDeliveryDateAsync_PersistsFirstAssignmentAndAllowsDateChangeWithoutScheduling()
+    public async Task SetDeliveryDateAsync_PersistsAssignmentDateAndScheduledStatus()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         var order = await fixture.AddOrderAsync("DATE-CHANGE", OrderStatus.Approved, fixture.North.Id, noDeliveryDate: true);
@@ -86,8 +86,8 @@ public class ProductionAssignmentTests
         await using var db = fixture.CreateDbContext();
         var saved = await db.Orders.SingleAsync(x => x.Id == order.Id);
         Assert.Equal(newDate, saved.DeliveryDate);
-        Assert.Equal(OrderStatus.Approved, saved.Status);
-        Assert.Empty(await db.DeliverySchedules.ToListAsync());
+        Assert.Equal(OrderStatus.Scheduled, saved.Status);
+        Assert.Equal(newDate, (await db.DeliverySchedules.SingleAsync()).DeliveryDate);
         Assert.Empty(await db.ProductionDeliveryPlanEvents.ToListAsync());
         Assert.Empty(await db.Stocks.ToListAsync());
         Assert.Empty(await db.ProductionPlans.ToListAsync());
@@ -132,7 +132,7 @@ public class ProductionAssignmentTests
     }
 
     [Fact]
-    public async Task UnassignScheduledOrder_KeepsDeliveryDateAndSchedule()
+    public async Task UnassignScheduledOrder_KeepsDeliveryDateAndRemovesSchedule()
     {
         await using var fixture = await AssignmentFixture.CreateAsync();
         var date = new DateTime(2026, 10, 15);
@@ -153,7 +153,7 @@ public class ProductionAssignmentTests
 
         await using var verify = fixture.CreateDbContext();
         Assert.Equal(date, (await verify.Orders.SingleAsync(x => x.Id == order.Id)).DeliveryDate);
-        Assert.Equal(date, (await verify.DeliverySchedules.SingleAsync(x => x.Id == scheduleId)).DeliveryDate);
+        Assert.False(await verify.DeliverySchedules.AnyAsync(x => x.Id == scheduleId));
     }
 
     [Fact]
@@ -349,7 +349,7 @@ public class ProductionAssignmentTests
         var savedOrderEvent = await verifyDb.ProductionDeliveryPlanEvents.SingleAsync(x => x.Id == orderEventId);
         var savedProductionEvent = await verifyDb.ProductionDeliveryPlanEvents.Include(x => x.Lines).SingleAsync(x => x.Id == productionEventId);
         Assert.Equal(changedDate, savedOrder.DeliveryDate);
-        Assert.Equal(OrderStatus.Approved, savedOrder.Status);
+        Assert.Equal(OrderStatus.Scheduled, savedOrder.Status);
         Assert.Equal(changedDate, savedSchedule.DeliveryDate);
         Assert.Equal("Scheduled", savedSchedule.Status);
         Assert.Equal(changedDate, savedOrderEvent.PlannedDeliveryDate);

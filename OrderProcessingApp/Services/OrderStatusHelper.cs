@@ -76,10 +76,11 @@ public static class OrderStatusHelper
             OrderStatus.Pending => targetEffective == OrderStatus.Flagged || targetEffective == OrderStatus.Approved,
             OrderStatus.Flagged => targetEffective == OrderStatus.Approved,
             OrderStatus.Validated => targetEffective == OrderStatus.Approved,
-            OrderStatus.Approved => targetEffective == OrderStatus.InProduction,
+            OrderStatus.Approved => targetEffective is OrderStatus.InProduction or OrderStatus.Scheduled,
             OrderStatus.InProduction => targetEffective == OrderStatus.Processed,
             OrderStatus.Processed => targetEffective == OrderStatus.Scheduled,
-            OrderStatus.Scheduled => false,
+            OrderStatus.Scheduled => targetEffective is OrderStatus.EnRoute or OrderStatus.Approved,
+            OrderStatus.EnRoute => targetEffective == OrderStatus.Delivered,
             _ => false
         };
     }

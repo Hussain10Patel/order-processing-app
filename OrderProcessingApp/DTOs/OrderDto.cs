@@ -8,6 +8,7 @@ public class OrderDto
     public string OrderNumber { get; set; } = string.Empty;
     public string OrderDate { get; set; } = string.Empty;
     public string? DeliveryDate { get; set; }
+    public string? OriginalCsvDeliveryDate { get; set; }
     public int DistributionCentreId { get; set; }
     public string DistributionCentreName { get; set; } = string.Empty;
     public OrderSource Source { get; set; }
