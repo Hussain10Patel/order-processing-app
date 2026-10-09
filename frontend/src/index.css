@@ -1173,6 +1173,7 @@ tr.row-unmapped-product {
 .production-delivery-page {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .production-delivery-table-panel {
@@ -1181,11 +1182,20 @@ tr.row-unmapped-product {
 }
 
 .production-delivery-table-wrap {
-  overflow: auto;
+  min-width: 0;
+  height: var(--planner-height, auto);
+  overflow: hidden;
 }
 
 .production-delivery-table {
   min-width: 1400px;
+  transform: scale(var(--planner-scale, 1));
+  transform-origin: top left;
+}
+
+.production-delivery-table .sticky-col,
+.production-delivery-table .sticky-action-col {
+  position: static;
 }
 
 .production-delivery-table th,

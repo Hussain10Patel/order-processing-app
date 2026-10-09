@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addOrderToPlan,
   addProductionDeliveryProductionEvent,
@@ -54,6 +54,42 @@ function ProductionDeliveryPage() {
   const [excludedOrders, setExcludedOrders] = useState([]);
   const [removingFromPlan, setRemovingFromPlan] = useState(null);
   const [addingToPlan, setAddingToPlan] = useState(null);
+  const plannerContainerRef = useRef(null);
+  const plannerTableRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const container = plannerContainerRef.current;
+    const table = plannerTableRef.current;
+    let animationFrame;
+
+    function fitPlanner() {
+      const width = Math.max(table.offsetWidth, table.scrollWidth);
+      if (!container.clientWidth || !width) return;
+
+      const scale = Math.min(1, container.clientWidth / width);
+      container.style.setProperty("--planner-scale", String(scale));
+      container.style.setProperty("--planner-height", `${Math.ceil((table.offsetHeight + 1) * scale)}px`);
+    }
+
+    function scheduleFit() {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(fitPlanner);
+    }
+
+    fitPlanner();
+    const observer = new ResizeObserver(scheduleFit);
+    observer.observe(container);
+    observer.observe(table);
+    window.addEventListener("resize", scheduleFit);
+    window.visualViewport?.addEventListener("resize", scheduleFit);
+
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      window.visualViewport?.removeEventListener("resize", scheduleFit);
+    };
+  }, []);
 
   async function loadPlan() {
     setLoading(true);
@@ -247,8 +283,8 @@ function ProductionDeliveryPage() {
       {error && <p className="alert error">{error}</p>}
 
       <div className="panel production-delivery-table-panel">
-        <div className="table-wrap production-delivery-table-wrap">
-          <table className="production-delivery-table">
+        <div className="table-wrap production-delivery-table-wrap" ref={plannerContainerRef}>
+          <table className="production-delivery-table" ref={plannerTableRef}>
             <thead>
               <tr>
                 <th className="sticky-col sticky-col-1">Order No.</th>
